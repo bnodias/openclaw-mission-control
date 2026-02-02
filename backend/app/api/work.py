@@ -9,6 +9,7 @@ from sqlmodel import Session, select
 from app.api.utils import get_actor_employee_id, log_activity
 from app.db.session import get_session
 from app.integrations.notify import NotifyContext, notify_openclaw
+from app.integrations.openclaw import OpenClawClient
 from app.models.org import Employee
 from app.models.work import Task, TaskComment
 from app.schemas.work import TaskCommentCreate, TaskCreate, TaskUpdate
@@ -117,6 +118,12 @@ def dispatch_task(
         raise HTTPException(status_code=400, detail="Task has no assignee")
 
     _validate_task_assignee(session, task.assignee_employee_id)
+
+    if OpenClawClient.from_env() is None:
+        raise HTTPException(
+            status_code=503,
+            detail="OpenClaw gateway is not configured (set OPENCLAW_GATEWAY_URL/TOKEN)",
+        )
 
     # Best-effort: enqueue an agent dispatch. This does not mutate the task.
     background.add_task(
