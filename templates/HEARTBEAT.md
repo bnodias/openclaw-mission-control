@@ -2,6 +2,9 @@
 
 If this file is empty, skip heartbeat work.
 
+## Purpose
+This file defines the single, authoritative heartbeat loop. Follow it exactly.
+
 ## Required inputs
 - BASE_URL (e.g. http://localhost:8000)
 - AUTH_TOKEN (agent token)
@@ -12,7 +15,20 @@ If this file is empty, skip heartbeat work.
 - Schedule is controlled by gateway heartbeat config (default: every 10 minutes).
 - On first boot, send one immediate check-in before the schedule starts.
 
-## On every heartbeat
+## Non‑negotiable rules
+- Task updates go only to task comments (never chat/web).
+- Comments must be markdown and must include: status, summary, details (bullets), next.
+- Every status change must have a comment within 30 seconds.
+- Do not claim a new task if you already have one in progress.
+
+## Pre‑flight checks (before each heartbeat)
+- Confirm BASE_URL, AUTH_TOKEN, and BOARD_ID are set.
+- Verify API access:
+  - GET $BASE_URL/api/v1/boards must succeed.
+  - GET $BASE_URL/api/v1/boards/{BOARD_ID}/tasks must succeed.
+- If any check fails, stop and retry next heartbeat.
+
+## Heartbeat checklist (run in order)
 1) Check in:
 ```bash
 curl -s -X POST "$BASE_URL/api/v1/agents/heartbeat" \
@@ -20,15 +36,6 @@ curl -s -X POST "$BASE_URL/api/v1/agents/heartbeat" \
   -H "Content-Type: application/json" \
   -d '{"name": "'$AGENT_NAME'", "board_id": "'$BOARD_ID'", "status": "online"}'
 ```
-
-## Commenting rules (mandatory)
-- Every task state change MUST be followed by a task comment within 30 seconds.
-- Never post task updates to chat/web channels. Task comments are the only update channel.
-- Minimum comment format:
-  - `status`: inbox | in_progress | review | done
-  - `summary`: one-line progress update
-  - `details`: 1–3 bullets of what changed / what you did
-  - `next`: next step or handoff request
 
 2) List boards:
 ```bash
@@ -42,26 +49,19 @@ curl -s "$BASE_URL/api/v1/boards/{BOARD_ID}/tasks" \
   -H "X-Agent-Token: $AUTH_TOKEN"
 ```
 
-4) Claim next task (FIFO):
-- Find the oldest task with status "inbox" across all boards.
-- Claim it by moving it to "in_progress":
-```bash
-curl -s -X PATCH "$BASE_URL/api/v1/boards/{BOARD_ID}/tasks/{TASK_ID}" \
-  -H "X-Agent-Token: $AUTH_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"status": "in_progress", "comment": "[status=in_progress] Claimed by '$AGENT_NAME'.\\nsummary: Starting work.\\ndetails: - Triage task and plan approach.\\nnext: Begin execution."}'
-```
+4) If you already have an in_progress task, continue working it and do not claim another.
 
-5) Work the task:
-- Update status as you progress.
-- Post a brief work log to the task comments endpoint (do not use chat).
-- When complete, use the following mandatory steps:
+5) If you do NOT have an in_progress task, claim one inbox task:
+- Move it to in_progress AND add a markdown comment with required fields.
 
-5a) Post the completion comment (required, markdown). Include:
-- status, summary, details (bullets), next, and the full response text.
-Use the task comments endpoint for this step.
+6) Work the task:
+- Post progress comments as you go.
+- Completion is a two‑step sequence:
+  6a) Post the full response as a markdown comment (required fields + response) using:
+      POST $BASE_URL/api/v1/boards/{BOARD_ID}/tasks/{TASK_ID}/comments
+  6b) Move the task to review.
 
-5b) Move the task to "review":
+6b) Move the task to "review":
 ```bash
 curl -s -X PATCH "$BASE_URL/api/v1/boards/{BOARD_ID}/tasks/{TASK_ID}" \
   -H "X-Agent-Token: $AUTH_TOKEN" \
@@ -72,6 +72,18 @@ curl -s -X PATCH "$BASE_URL/api/v1/boards/{BOARD_ID}/tasks/{TASK_ID}" \
 ## Definition of Done
 - A task is not complete until the draft/response is posted as a task comment.
 - Comments must be markdown and include: summary, details (bullets), next.
+
+## Common mistakes (avoid)
+- Changing status without posting a comment.
+- Posting updates in chat/web instead of task comments.
+- Claiming a second task while one is already in progress.
+- Moving to review before posting the full response.
+
+## Success criteria (when to say HEARTBEAT_OK)
+- Check‑in succeeded.
+- Tasks were listed successfully.
+- If any task was worked, a markdown comment was posted and the task moved to review.
+- If any task is inbox or in_progress, do NOT say HEARTBEAT_OK.
 
 ## Status flow
 ```

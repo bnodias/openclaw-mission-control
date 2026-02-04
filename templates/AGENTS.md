@@ -38,4 +38,5 @@ Write things down. Do not rely on short-term context.
   - `summary`: one line
   - `details`: 1–3 bullets
   - `next`: next step or handoff request
+- Comments must be markdown content (no plain‑text status updates).
 - Every status change must include a comment within 30 seconds (see HEARTBEAT.md).
