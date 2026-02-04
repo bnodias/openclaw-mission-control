@@ -280,46 +280,65 @@ export default function BoardDetailPage() {
       </SignedOut>
       <SignedIn>
         <DashboardSidebar />
-        <div className="flex h-full flex-col gap-6 rounded-2xl surface-panel p-8">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div className="space-y-2">
-              <p className="text-xs font-semibold uppercase tracking-[0.3em] text-quiet">
-                {board?.slug ?? "board"}
-              </p>
-              <h1 className="text-2xl font-semibold text-strong">
-                {board?.name ?? "Board"}
-              </h1>
-              <p className="text-sm text-muted">
-                Keep tasks moving through your workflow.
-              </p>
+        <main className="flex-1 overflow-y-auto bg-gradient-to-br from-slate-50 to-slate-100">
+          <div className="sticky top-0 z-30 border-b border-slate-200 bg-white shadow-sm">
+            <div className="px-8 py-6">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    <span>{board?.name ?? "Board"}</span>
+                  </div>
+                  <h1 className="mt-2 text-2xl font-semibold text-slate-900 tracking-tight">
+                    {board?.name ?? "Board"}
+                  </h1>
+                  <p className="mt-1 text-sm text-slate-500">
+                    Keep tasks moving through your workflow.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="flex items-center gap-1 rounded-lg bg-slate-100 p-1">
+                    <button className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white">
+                      Board
+                    </button>
+                    <button className="rounded-md px-3 py-1.5 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-200 hover:text-slate-900">
+                      List
+                    </button>
+                    <button className="rounded-md px-3 py-1.5 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-200 hover:text-slate-900">
+                      Timeline
+                    </button>
+                  </div>
+                  <Button
+                    variant="outline"
+                    onClick={() => router.push("/boards")}
+                  >
+                    Back to boards
+                  </Button>
+                </div>
+              </div>
             </div>
-            <Button
-              variant="outline"
-              onClick={() => router.push("/boards")}
-            >
-              Back to boards
-            </Button>
           </div>
 
-          {error && (
-            <div className="rounded-lg border border-[color:var(--border)] bg-[color:var(--surface-muted)] p-3 text-xs text-muted">
-              {error}
-            </div>
-          )}
+          <div className="p-6">
+            {error && (
+              <div className="mb-4 rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-600 shadow-sm">
+                {error}
+              </div>
+            )}
 
-          {isLoading ? (
-            <div className="flex flex-1 items-center justify-center text-sm text-muted">
-              Loading {titleLabel}…
-            </div>
-          ) : (
-            <TaskBoard
-              tasks={displayTasks}
-              onCreateTask={() => setIsDialogOpen(true)}
-              isCreateDisabled={isCreating}
-              onTaskSelect={openComments}
-            />
-          )}
-        </div>
+            {isLoading ? (
+              <div className="flex min-h-[50vh] items-center justify-center text-sm text-slate-500">
+                Loading {titleLabel}…
+              </div>
+            ) : (
+              <TaskBoard
+                tasks={displayTasks}
+                onCreateTask={() => setIsDialogOpen(true)}
+                isCreateDisabled={isCreating}
+                onTaskSelect={openComments}
+              />
+            )}
+          </div>
+        </main>
       </SignedIn>
 
       <Dialog open={isCommentsOpen} onOpenChange={(open) => {

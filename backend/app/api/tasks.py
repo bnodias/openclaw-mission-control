@@ -32,6 +32,15 @@ from app.services.activity_log import record_activity
 router = APIRouter(prefix="/boards/{board_id}/tasks", tags=["tasks"])
 
 REQUIRED_COMMENT_FIELDS = ("summary:", "details:", "next:")
+ALLOWED_STATUSES = {"inbox", "in_progress", "review", "done"}
+
+
+def validate_task_status(status_value: str) -> None:
+    if status_value not in ALLOWED_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Unsupported task status.",
+        )
 
 
 def is_valid_markdown_comment(message: str) -> bool:
@@ -82,6 +91,11 @@ def list_tasks(
     if status_filter:
         statuses = [s.strip() for s in status_filter.split(",") if s.strip()]
         if statuses:
+            if any(status not in ALLOWED_STATUSES for status in statuses):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Unsupported task status filter.",
+                )
             statement = statement.where(col(Task.status).in_(statuses))
     if assigned_agent_id is not None:
         statement = statement.where(col(Task.assigned_agent_id) == assigned_agent_id)
@@ -99,6 +113,7 @@ def create_task(
     session: Session = Depends(get_session),
     auth: AuthContext = Depends(require_admin_auth),
 ) -> Task:
+    validate_task_status(payload.status)
     task = Task.model_validate(payload)
     task.board_id = board.id
     if task.created_by_user_id is None and auth.user is not None:
@@ -135,6 +150,7 @@ def update_task(
         if not set(updates).issubset(allowed_fields):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
         if "status" in updates:
+            validate_task_status(updates["status"])
             if updates["status"] == "inbox":
                 task.assigned_agent_id = None
                 task.in_progress_at = None
@@ -143,6 +159,7 @@ def update_task(
                 if updates["status"] == "in_progress":
                     task.in_progress_at = datetime.utcnow()
     elif "status" in updates:
+        validate_task_status(updates["status"])
         if updates["status"] == "inbox":
             task.assigned_agent_id = None
             task.in_progress_at = None
