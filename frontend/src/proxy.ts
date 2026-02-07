@@ -14,7 +14,8 @@ const isPublicRoute = createRouteMatcher(["/sign-in(.*)"]);
 export default isClerkEnabled()
   ? clerkMiddleware(async (auth, req) => {
       if (isPublicRoute(req)) return NextResponse.next();
-      await auth().protect();
+      const session = await auth();
+      session.protect();
       return NextResponse.next();
     })
   : () => NextResponse.next();
