@@ -8,8 +8,13 @@ from sqlalchemy import delete, func
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.api.deps import ActorContext, get_board_or_404, require_admin_auth, require_admin_or_agent
-from app.core.auth import AuthContext
+from app.api.deps import (
+    get_board_for_actor_read,
+    get_board_for_user_read,
+    get_board_for_user_write,
+    require_org_admin,
+    require_org_member,
+)
 from app.core.time import utcnow
 from app.db import crud
 from app.db.pagination import paginate
@@ -38,6 +43,7 @@ from app.schemas.pagination import DefaultLimitOffsetPage
 from app.schemas.view_models import BoardGroupSnapshot, BoardSnapshot
 from app.services.board_group_snapshot import build_board_group_snapshot
 from app.services.board_snapshot import build_board_snapshot
+from app.services.organizations import OrganizationContext, board_access_filter
 
 router = APIRouter(prefix="/boards", tags=["boards"])
 
@@ -53,9 +59,19 @@ def _build_session_key(agent_name: str) -> str:
     return f"{AGENT_SESSION_PREFIX}:{_slugify(agent_name)}:main"
 
 
-async def _require_gateway(session: AsyncSession, gateway_id: object) -> Gateway:
+async def _require_gateway(
+    session: AsyncSession,
+    gateway_id: object,
+    *,
+    organization_id: UUID | None = None,
+) -> Gateway:
     gateway = await crud.get_by_id(session, Gateway, gateway_id)
     if gateway is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="gateway_id is invalid",
+        )
+    if organization_id is not None and gateway.organization_id != organization_id:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="gateway_id is invalid",
@@ -65,14 +81,25 @@ async def _require_gateway(session: AsyncSession, gateway_id: object) -> Gateway
 
 async def _require_gateway_for_create(
     payload: BoardCreate,
+    ctx: OrganizationContext = Depends(require_org_admin),
     session: AsyncSession = Depends(get_session),
 ) -> Gateway:
-    return await _require_gateway(session, payload.gateway_id)
+    return await _require_gateway(session, payload.gateway_id, organization_id=ctx.organization.id)
 
 
-async def _require_board_group(session: AsyncSession, board_group_id: object) -> BoardGroup:
+async def _require_board_group(
+    session: AsyncSession,
+    board_group_id: object,
+    *,
+    organization_id: UUID | None = None,
+) -> BoardGroup:
     group = await crud.get_by_id(session, BoardGroup, board_group_id)
     if group is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="board_group_id is invalid",
+        )
+    if organization_id is not None and group.organization_id != organization_id:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="board_group_id is invalid",
@@ -82,11 +109,16 @@ async def _require_board_group(session: AsyncSession, board_group_id: object) ->
 
 async def _require_board_group_for_create(
     payload: BoardCreate,
+    ctx: OrganizationContext = Depends(require_org_admin),
     session: AsyncSession = Depends(get_session),
 ) -> BoardGroup | None:
     if payload.board_group_id is None:
         return None
-    return await _require_board_group(session, payload.board_group_id)
+    return await _require_board_group(
+        session,
+        payload.board_group_id,
+        organization_id=ctx.organization.id,
+    )
 
 
 async def _apply_board_update(
@@ -97,9 +129,15 @@ async def _apply_board_update(
 ) -> Board:
     updates = payload.model_dump(exclude_unset=True)
     if "gateway_id" in updates:
-        await _require_gateway(session, updates["gateway_id"])
+        await _require_gateway(
+            session, updates["gateway_id"], organization_id=board.organization_id
+        )
     if "board_group_id" in updates and updates["board_group_id"] is not None:
-        await _require_board_group(session, updates["board_group_id"])
+        await _require_board_group(
+            session,
+            updates["board_group_id"],
+            organization_id=board.organization_id,
+        )
     for key, value in updates.items():
         setattr(board, key, value)
     if updates.get("board_type") == "goal":
@@ -182,9 +220,9 @@ async def list_boards(
     gateway_id: UUID | None = Query(default=None),
     board_group_id: UUID | None = Query(default=None),
     session: AsyncSession = Depends(get_session),
-    actor: ActorContext = Depends(require_admin_or_agent),
+    ctx: OrganizationContext = Depends(require_org_member),
 ) -> DefaultLimitOffsetPage[BoardRead]:
-    statement = select(Board)
+    statement = select(Board).where(board_access_filter(ctx.member, write=False))
     if gateway_id is not None:
         statement = statement.where(col(Board.gateway_id) == gateway_id)
     if board_group_id is not None:
@@ -199,28 +237,25 @@ async def create_board(
     _gateway: Gateway = Depends(_require_gateway_for_create),
     _board_group: BoardGroup | None = Depends(_require_board_group_for_create),
     session: AsyncSession = Depends(get_session),
-    auth: AuthContext = Depends(require_admin_auth),
+    ctx: OrganizationContext = Depends(require_org_admin),
 ) -> Board:
-    return await crud.create(session, Board, **payload.model_dump())
+    data = payload.model_dump()
+    data["organization_id"] = ctx.organization.id
+    return await crud.create(session, Board, **data)
 
 
 @router.get("/{board_id}", response_model=BoardRead)
 def get_board(
-    board: Board = Depends(get_board_or_404),
-    actor: ActorContext = Depends(require_admin_or_agent),
+    board: Board = Depends(get_board_for_user_read),
 ) -> Board:
     return board
 
 
 @router.get("/{board_id}/snapshot", response_model=BoardSnapshot)
 async def get_board_snapshot(
-    board: Board = Depends(get_board_or_404),
+    board: Board = Depends(get_board_for_actor_read),
     session: AsyncSession = Depends(get_session),
-    actor: ActorContext = Depends(require_admin_or_agent),
 ) -> BoardSnapshot:
-    if actor.actor_type == "agent" and actor.agent:
-        if actor.agent.board_id and actor.agent.board_id != board.id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     return await build_board_snapshot(session, board)
 
 
@@ -229,13 +264,9 @@ async def get_board_group_snapshot(
     include_self: bool = Query(default=False),
     include_done: bool = Query(default=False),
     per_board_task_limit: int = Query(default=5, ge=0, le=100),
-    board: Board = Depends(get_board_or_404),
+    board: Board = Depends(get_board_for_actor_read),
     session: AsyncSession = Depends(get_session),
-    actor: ActorContext = Depends(require_admin_or_agent),
 ) -> BoardGroupSnapshot:
-    if actor.actor_type == "agent" and actor.agent:
-        if actor.agent.board_id and actor.agent.board_id != board.id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     return await build_board_group_snapshot(
         session,
         board=board,
@@ -249,8 +280,7 @@ async def get_board_group_snapshot(
 async def update_board(
     payload: BoardUpdate,
     session: AsyncSession = Depends(get_session),
-    board: Board = Depends(get_board_or_404),
-    auth: AuthContext = Depends(require_admin_auth),
+    board: Board = Depends(get_board_for_user_write),
 ) -> Board:
     return await _apply_board_update(payload=payload, session=session, board=board)
 
@@ -258,8 +288,7 @@ async def update_board(
 @router.delete("/{board_id}", response_model=OkResponse)
 async def delete_board(
     session: AsyncSession = Depends(get_session),
-    board: Board = Depends(get_board_or_404),
-    auth: AuthContext = Depends(require_admin_auth),
+    board: Board = Depends(get_board_for_user_write),
 ) -> OkResponse:
     agents = list(await session.exec(select(Agent).where(Agent.board_id == board.id)))
     task_ids = list(await session.exec(select(Task.id).where(Task.board_id == board.id)))

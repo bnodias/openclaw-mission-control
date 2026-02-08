@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app.api.deps import require_org_admin
 from app.core.auth import AuthContext, get_auth_context
 from app.db.session import get_session
 from app.integrations.openclaw_gateway import GatewayConfig as GatewayClientConfig
@@ -30,6 +31,7 @@ from app.schemas.gateway_api import (
     GatewaySessionsResponse,
     GatewaysStatusResponse,
 )
+from app.services.organizations import OrganizationContext, require_board_access
 
 router = APIRouter(prefix="/gateways", tags=["gateways"])
 
@@ -40,6 +42,8 @@ async def _resolve_gateway(
     gateway_url: str | None,
     gateway_token: str | None,
     gateway_main_session_key: str | None,
+    *,
+    user: object | None = None,
 ) -> tuple[Board | None, GatewayClientConfig, str | None]:
     if gateway_url:
         return (
@@ -55,6 +59,8 @@ async def _resolve_gateway(
     board = await session.get(Board, board_id)
     if board is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board not found")
+    if isinstance(user, object) and user is not None:
+        await require_board_access(session, user=user, board=board, write=False)  # type: ignore[arg-type]
     if not board.gateway_id:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -79,9 +85,16 @@ async def _resolve_gateway(
 
 
 async def _require_gateway(
-    session: AsyncSession, board_id: str | None
+    session: AsyncSession, board_id: str | None, *, user: object | None = None
 ) -> tuple[Board, GatewayClientConfig, str | None]:
-    board, config, main_session = await _resolve_gateway(session, board_id, None, None, None)
+    board, config, main_session = await _resolve_gateway(
+        session,
+        board_id,
+        None,
+        None,
+        None,
+        user=user,
+    )
     if board is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -95,6 +108,7 @@ async def gateways_status(
     params: GatewayResolveQuery = Depends(),
     session: AsyncSession = Depends(get_session),
     auth: AuthContext = Depends(get_auth_context),
+    ctx: OrganizationContext = Depends(require_org_admin),
 ) -> GatewaysStatusResponse:
     board, config, main_session = await _resolve_gateway(
         session,
@@ -102,7 +116,10 @@ async def gateways_status(
         params.gateway_url,
         params.gateway_token,
         params.gateway_main_session_key,
+        user=auth.user,
     )
+    if board is not None and board.organization_id != ctx.organization.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     try:
         sessions = await openclaw_call("sessions.list", config=config)
         if isinstance(sessions, dict):
@@ -136,6 +153,7 @@ async def list_gateway_sessions(
     board_id: str | None = Query(default=None),
     session: AsyncSession = Depends(get_session),
     auth: AuthContext = Depends(get_auth_context),
+    ctx: OrganizationContext = Depends(require_org_admin),
 ) -> GatewaySessionsResponse:
     board, config, main_session = await _resolve_gateway(
         session,
@@ -143,7 +161,10 @@ async def list_gateway_sessions(
         None,
         None,
         None,
+        user=auth.user,
     )
+    if board is not None and board.organization_id != ctx.organization.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     try:
         sessions = await openclaw_call("sessions.list", config=config)
     except OpenClawGatewayError as exc:
@@ -175,6 +196,7 @@ async def get_gateway_session(
     board_id: str | None = Query(default=None),
     session: AsyncSession = Depends(get_session),
     auth: AuthContext = Depends(get_auth_context),
+    ctx: OrganizationContext = Depends(require_org_admin),
 ) -> GatewaySessionResponse:
     board, config, main_session = await _resolve_gateway(
         session,
@@ -182,7 +204,10 @@ async def get_gateway_session(
         None,
         None,
         None,
+        user=auth.user,
     )
+    if board is not None and board.organization_id != ctx.organization.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     try:
         sessions = await openclaw_call("sessions.list", config=config)
     except OpenClawGatewayError as exc:
@@ -220,8 +245,11 @@ async def get_session_history(
     board_id: str | None = Query(default=None),
     session: AsyncSession = Depends(get_session),
     auth: AuthContext = Depends(get_auth_context),
+    ctx: OrganizationContext = Depends(require_org_admin),
 ) -> GatewaySessionHistoryResponse:
-    _, config, _ = await _require_gateway(session, board_id)
+    board, config, _ = await _require_gateway(session, board_id, user=auth.user)
+    if board.organization_id != ctx.organization.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     try:
         history = await get_chat_history(session_id, config=config)
     except OpenClawGatewayError as exc:
@@ -238,8 +266,14 @@ async def send_gateway_session_message(
     board_id: str | None = Query(default=None),
     session: AsyncSession = Depends(get_session),
     auth: AuthContext = Depends(get_auth_context),
+    ctx: OrganizationContext = Depends(require_org_admin),
 ) -> OkResponse:
-    board, config, main_session = await _require_gateway(session, board_id)
+    board, config, main_session = await _require_gateway(session, board_id, user=auth.user)
+    if board.organization_id != ctx.organization.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    if auth.user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+    await require_board_access(session, user=auth.user, board=board, write=True)
     try:
         if main_session and session_id == main_session:
             await ensure_session(main_session, config=config, label="Main Agent")
@@ -252,6 +286,7 @@ async def send_gateway_session_message(
 @router.get("/commands", response_model=GatewayCommandsResponse)
 async def gateway_commands(
     auth: AuthContext = Depends(get_auth_context),
+    _ctx: OrganizationContext = Depends(require_org_admin),
 ) -> GatewayCommandsResponse:
     return GatewayCommandsResponse(
         protocol_version=PROTOCOL_VERSION,

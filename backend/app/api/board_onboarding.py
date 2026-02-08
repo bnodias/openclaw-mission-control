@@ -9,7 +9,14 @@ from pydantic import ValidationError
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.api.deps import ActorContext, get_board_or_404, require_admin_auth, require_admin_or_agent
+from app.api.deps import (
+    ActorContext,
+    get_board_for_user_read,
+    get_board_for_user_write,
+    get_board_or_404,
+    require_admin_auth,
+    require_admin_or_agent,
+)
 from app.core.agent_tokens import generate_agent_token, hash_agent_token
 from app.core.auth import AuthContext
 from app.core.config import settings
@@ -136,9 +143,8 @@ async def _ensure_lead_agent(
 
 @router.get("", response_model=BoardOnboardingRead)
 async def get_onboarding(
-    board: Board = Depends(get_board_or_404),
+    board: Board = Depends(get_board_for_user_read),
     session: AsyncSession = Depends(get_session),
-    auth: AuthContext = Depends(require_admin_auth),
 ) -> BoardOnboardingSession:
     onboarding = (
         await session.exec(
@@ -155,9 +161,8 @@ async def get_onboarding(
 @router.post("/start", response_model=BoardOnboardingRead)
 async def start_onboarding(
     payload: BoardOnboardingStart,
-    board: Board = Depends(get_board_or_404),
+    board: Board = Depends(get_board_for_user_write),
     session: AsyncSession = Depends(get_session),
-    auth: AuthContext = Depends(require_admin_auth),
 ) -> BoardOnboardingSession:
     onboarding = (
         await session.exec(
@@ -239,9 +244,8 @@ async def start_onboarding(
 @router.post("/answer", response_model=BoardOnboardingRead)
 async def answer_onboarding(
     payload: BoardOnboardingAnswer,
-    board: Board = Depends(get_board_or_404),
+    board: Board = Depends(get_board_for_user_write),
     session: AsyncSession = Depends(get_session),
-    auth: AuthContext = Depends(require_admin_auth),
 ) -> BoardOnboardingSession:
     onboarding = (
         await session.exec(
@@ -342,7 +346,7 @@ async def agent_onboarding_update(
 @router.post("/confirm", response_model=BoardRead)
 async def confirm_onboarding(
     payload: BoardOnboardingConfirm,
-    board: Board = Depends(get_board_or_404),
+    board: Board = Depends(get_board_for_user_write),
     session: AsyncSession = Depends(get_session),
     auth: AuthContext = Depends(require_admin_auth),
 ) -> Board:

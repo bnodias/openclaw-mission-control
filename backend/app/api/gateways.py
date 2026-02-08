@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.api.deps import require_admin_auth
+from app.api.deps import require_org_admin
 from app.core.agent_tokens import generate_agent_token, hash_agent_token
 from app.core.auth import AuthContext, get_auth_context
 from app.core.time import utcnow
@@ -25,6 +25,7 @@ from app.schemas.gateways import (
 )
 from app.schemas.pagination import DefaultLimitOffsetPage
 from app.services.agent_provisioning import DEFAULT_HEARTBEAT_CONFIG, provision_main_agent
+from app.services.organizations import OrganizationContext
 from app.services.template_sync import sync_gateway_templates as sync_gateway_templates_service
 
 router = APIRouter(prefix="/gateways", tags=["gateways"])
@@ -131,9 +132,13 @@ async def _ensure_main_agent(
 @router.get("", response_model=DefaultLimitOffsetPage[GatewayRead])
 async def list_gateways(
     session: AsyncSession = Depends(get_session),
-    auth: AuthContext = Depends(get_auth_context),
+    ctx: OrganizationContext = Depends(require_org_admin),
 ) -> DefaultLimitOffsetPage[GatewayRead]:
-    statement = select(Gateway).order_by(col(Gateway.created_at).desc())
+    statement = (
+        select(Gateway)
+        .where(col(Gateway.organization_id) == ctx.organization.id)
+        .order_by(col(Gateway.created_at).desc())
+    )
     return await paginate(session, statement)
 
 
@@ -142,8 +147,10 @@ async def create_gateway(
     payload: GatewayCreate,
     session: AsyncSession = Depends(get_session),
     auth: AuthContext = Depends(get_auth_context),
+    ctx: OrganizationContext = Depends(require_org_admin),
 ) -> Gateway:
     data = payload.model_dump()
+    data["organization_id"] = ctx.organization.id
     gateway = Gateway.model_validate(data)
     session.add(gateway)
     await session.commit()
@@ -156,10 +163,10 @@ async def create_gateway(
 async def get_gateway(
     gateway_id: UUID,
     session: AsyncSession = Depends(get_session),
-    auth: AuthContext = Depends(get_auth_context),
+    ctx: OrganizationContext = Depends(require_org_admin),
 ) -> Gateway:
     gateway = await session.get(Gateway, gateway_id)
-    if gateway is None:
+    if gateway is None or gateway.organization_id != ctx.organization.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Gateway not found")
     return gateway
 
@@ -170,9 +177,10 @@ async def update_gateway(
     payload: GatewayUpdate,
     session: AsyncSession = Depends(get_session),
     auth: AuthContext = Depends(get_auth_context),
+    ctx: OrganizationContext = Depends(require_org_admin),
 ) -> Gateway:
     gateway = await session.get(Gateway, gateway_id)
-    if gateway is None:
+    if gateway is None or gateway.organization_id != ctx.organization.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Gateway not found")
     previous_name = gateway.name
     previous_session_key = gateway.main_session_key
@@ -202,10 +210,11 @@ async def sync_gateway_templates(
     force_bootstrap: bool = Query(default=False),
     board_id: UUID | None = Query(default=None),
     session: AsyncSession = Depends(get_session),
-    auth: AuthContext = Depends(require_admin_auth),
+    auth: AuthContext = Depends(get_auth_context),
+    ctx: OrganizationContext = Depends(require_org_admin),
 ) -> GatewayTemplatesSyncResult:
     gateway = await session.get(Gateway, gateway_id)
-    if gateway is None:
+    if gateway is None or gateway.organization_id != ctx.organization.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Gateway not found")
     return await sync_gateway_templates_service(
         session,
@@ -223,10 +232,10 @@ async def sync_gateway_templates(
 async def delete_gateway(
     gateway_id: UUID,
     session: AsyncSession = Depends(get_session),
-    auth: AuthContext = Depends(get_auth_context),
+    ctx: OrganizationContext = Depends(require_org_admin),
 ) -> OkResponse:
     gateway = await session.get(Gateway, gateway_id)
-    if gateway is None:
+    if gateway is None or gateway.organization_id != ctx.organization.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Gateway not found")
     await session.delete(gateway)
     await session.commit()

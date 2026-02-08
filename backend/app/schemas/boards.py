@@ -54,5 +54,6 @@ class BoardUpdate(SQLModel):
 
 class BoardRead(BoardBase):
     id: UUID
+    organization_id: UUID
     created_at: datetime
     updated_at: datetime

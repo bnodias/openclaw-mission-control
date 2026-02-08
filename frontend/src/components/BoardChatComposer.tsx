@@ -8,12 +8,14 @@ import { Textarea } from "@/components/ui/textarea";
 type BoardChatComposerProps = {
   placeholder?: string;
   isSending?: boolean;
+  disabled?: boolean;
   onSend: (content: string) => Promise<boolean>;
 };
 
 function BoardChatComposerImpl({
   placeholder = "Message the board lead. Tag agents with @name.",
   isSending = false,
+  disabled = false,
   onSend,
 }: BoardChatComposerProps) {
   const [value, setValue] = useState("");
@@ -28,7 +30,7 @@ function BoardChatComposerImpl({
   }, [isSending]);
 
   const send = useCallback(async () => {
-    if (isSending) return;
+    if (isSending || disabled) return;
     const trimmed = value.trim();
     if (!trimmed) return;
     const ok = await onSend(trimmed);
@@ -36,7 +38,7 @@ function BoardChatComposerImpl({
     if (ok) {
       setValue("");
     }
-  }, [isSending, onSend, value]);
+  }, [disabled, isSending, onSend, value]);
 
   return (
     <div className="mt-4 space-y-2">
@@ -53,12 +55,12 @@ function BoardChatComposerImpl({
         }}
         placeholder={placeholder}
         className="min-h-[120px]"
-        disabled={isSending}
+        disabled={isSending || disabled}
       />
       <div className="flex justify-end">
         <Button
           onClick={() => void send()}
-          disabled={isSending || !value.trim()}
+          disabled={isSending || disabled || !value.trim()}
         >
           {isSending ? "Sending…" : "Send"}
         </Button>

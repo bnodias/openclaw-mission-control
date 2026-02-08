@@ -24,5 +24,6 @@ class BoardGroupUpdate(SQLModel):
 
 class BoardGroupRead(BoardGroupBase):
     id: UUID
+    organization_id: UUID
     created_at: datetime
     updated_at: datetime

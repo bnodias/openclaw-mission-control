@@ -13,6 +13,7 @@ class BoardGroup(TenantScoped, table=True):
     __tablename__ = "board_groups"
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
+    organization_id: UUID = Field(foreign_key="organizations.id", index=True)
     name: str
     slug: str = Field(index=True)
     description: str | None = None

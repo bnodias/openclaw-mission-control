@@ -12,8 +12,13 @@ from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
-from app.api.deps import ActorContext, get_board_or_404, require_admin_auth, require_admin_or_agent
-from app.core.auth import AuthContext
+from app.api.deps import (
+    ActorContext,
+    get_board_for_actor_read,
+    get_board_for_actor_write,
+    require_admin_or_agent,
+    require_org_member,
+)
 from app.core.config import settings
 from app.core.time import utcnow
 from app.db.pagination import paginate
@@ -25,9 +30,17 @@ from app.models.board_group_memory import BoardGroupMemory
 from app.models.board_groups import BoardGroup
 from app.models.boards import Board
 from app.models.gateways import Gateway
+from app.models.users import User
 from app.schemas.board_group_memory import BoardGroupMemoryCreate, BoardGroupMemoryRead
 from app.schemas.pagination import DefaultLimitOffsetPage
 from app.services.mentions import extract_mentions, matches_agent_mention
+from app.services.organizations import (
+    OrganizationContext,
+    is_org_admin,
+    list_accessible_board_ids,
+    member_all_boards_read,
+    member_all_boards_write,
+)
 
 router = APIRouter(tags=["board-group-memory"])
 
@@ -94,6 +107,38 @@ async def _fetch_memory_events(
         col(BoardGroupMemory.created_at)
     )
     return list(await session.exec(statement))
+
+
+async def _require_group_access(
+    session: AsyncSession,
+    *,
+    group_id: UUID,
+    ctx: OrganizationContext,
+    write: bool,
+) -> BoardGroup:
+    group = await session.get(BoardGroup, group_id)
+    if group is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if group.organization_id != ctx.member.organization_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    if write and member_all_boards_write(ctx.member):
+        return group
+    if not write and member_all_boards_read(ctx.member):
+        return group
+
+    board_ids = list(
+        await session.exec(select(Board.id).where(col(Board.board_group_id) == group_id))
+    )
+    if not board_ids:
+        if is_org_admin(ctx.member):
+            return group
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    allowed_ids = await list_accessible_board_ids(session, member=ctx.member, write=write)
+    if not set(board_ids).intersection(set(allowed_ids)):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    return group
 
 
 async def _notify_group_memory_targets(
@@ -193,11 +238,9 @@ async def list_board_group_memory(
     group_id: UUID,
     is_chat: bool | None = Query(default=None),
     session: AsyncSession = Depends(get_session),
-    auth: AuthContext = Depends(require_admin_auth),
+    ctx: OrganizationContext = Depends(require_org_member),
 ) -> DefaultLimitOffsetPage[BoardGroupMemoryRead]:
-    group = await session.get(BoardGroup, group_id)
-    if group is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    await _require_group_access(session, group_id=group_id, ctx=ctx, write=False)
     statement = (
         select(BoardGroupMemory).where(col(BoardGroupMemory.board_group_id) == group_id)
         # Old/invalid rows (empty/whitespace-only content) can exist; exclude them to
@@ -217,11 +260,9 @@ async def stream_board_group_memory(
     since: str | None = Query(default=None),
     is_chat: bool | None = Query(default=None),
     session: AsyncSession = Depends(get_session),
-    auth: AuthContext = Depends(require_admin_auth),
+    ctx: OrganizationContext = Depends(require_org_member),
 ) -> EventSourceResponse:
-    group = await session.get(BoardGroup, group_id)
-    if group is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    await _require_group_access(session, group_id=group_id, ctx=ctx, write=False)
     since_dt = _parse_since(since) or utcnow()
     last_seen = since_dt
 
@@ -252,13 +293,12 @@ async def create_board_group_memory(
     group_id: UUID,
     payload: BoardGroupMemoryCreate,
     session: AsyncSession = Depends(get_session),
-    auth: AuthContext = Depends(require_admin_auth),
+    ctx: OrganizationContext = Depends(require_org_member),
 ) -> BoardGroupMemory:
-    group = await session.get(BoardGroup, group_id)
-    if group is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    group = await _require_group_access(session, group_id=group_id, ctx=ctx, write=True)
 
-    actor = ActorContext(actor_type="user", user=auth.user)
+    user = await session.get(User, ctx.member.user_id)
+    actor = ActorContext(actor_type="user", user=user)
     tags = set(payload.tags or [])
     is_chat = "chat" in tags
     mentions = extract_mentions(payload.content)
@@ -287,13 +327,9 @@ async def create_board_group_memory(
 @board_router.get("", response_model=DefaultLimitOffsetPage[BoardGroupMemoryRead])
 async def list_board_group_memory_for_board(
     is_chat: bool | None = Query(default=None),
-    board: Board = Depends(get_board_or_404),
+    board: Board = Depends(get_board_for_actor_read),
     session: AsyncSession = Depends(get_session),
-    actor: ActorContext = Depends(require_admin_or_agent),
 ) -> DefaultLimitOffsetPage[BoardGroupMemoryRead]:
-    if actor.actor_type == "agent" and actor.agent:
-        if actor.agent.board_id and actor.agent.board_id != board.id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     group_id = board.board_group_id
     if group_id is None:
         statement = select(BoardGroupMemory).where(col(BoardGroupMemory.id).is_(None))
@@ -314,14 +350,10 @@ async def list_board_group_memory_for_board(
 @board_router.get("/stream")
 async def stream_board_group_memory_for_board(
     request: Request,
-    board: Board = Depends(get_board_or_404),
-    actor: ActorContext = Depends(require_admin_or_agent),
+    board: Board = Depends(get_board_for_actor_read),
     since: str | None = Query(default=None),
     is_chat: bool | None = Query(default=None),
 ) -> EventSourceResponse:
-    if actor.actor_type == "agent" and actor.agent:
-        if actor.agent.board_id and actor.agent.board_id != board.id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     group_id = board.board_group_id
     since_dt = _parse_since(since) or utcnow()
     last_seen = since_dt
@@ -354,13 +386,10 @@ async def stream_board_group_memory_for_board(
 @board_router.post("", response_model=BoardGroupMemoryRead)
 async def create_board_group_memory_for_board(
     payload: BoardGroupMemoryCreate,
-    board: Board = Depends(get_board_or_404),
+    board: Board = Depends(get_board_for_actor_write),
     session: AsyncSession = Depends(get_session),
     actor: ActorContext = Depends(require_admin_or_agent),
 ) -> BoardGroupMemory:
-    if actor.actor_type == "agent" and actor.agent:
-        if actor.agent.board_id and actor.agent.board_id != board.id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     group_id = board.board_group_id
     if group_id is None:
         raise HTTPException(

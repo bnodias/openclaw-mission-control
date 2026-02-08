@@ -18,6 +18,10 @@ import {
   type listAgentsApiV1AgentsGetResponse,
   useListAgentsApiV1AgentsGet,
 } from "@/api/generated/agents/agents";
+import {
+  type getMyMembershipApiV1OrganizationsMeMemberGetResponse,
+  useGetMyMembershipApiV1OrganizationsMeMemberGet,
+} from "@/api/generated/organizations/organizations";
 import { DashboardSidebar } from "@/components/organisms/DashboardSidebar";
 import { DashboardShell } from "@/components/templates/DashboardShell";
 import { Button } from "@/components/ui/button";
@@ -49,12 +53,26 @@ export default function GatewayDetailPage() {
     ? gatewayIdParam[0]
     : gatewayIdParam;
 
+  const membershipQuery = useGetMyMembershipApiV1OrganizationsMeMemberGet<
+    getMyMembershipApiV1OrganizationsMeMemberGetResponse,
+    ApiError
+  >({
+    query: {
+      enabled: Boolean(isSignedIn),
+      refetchOnMount: "always",
+      retry: false,
+    },
+  });
+  const member =
+    membershipQuery.data?.status === 200 ? membershipQuery.data.data : null;
+  const isAdmin = member ? ["owner", "admin"].includes(member.role) : false;
+
   const gatewayQuery = useGetGatewayApiV1GatewaysGatewayIdGet<
     getGatewayApiV1GatewaysGatewayIdGetResponse,
     ApiError
   >(gatewayId ?? "", {
     query: {
-      enabled: Boolean(isSignedIn && gatewayId),
+      enabled: Boolean(isSignedIn && isAdmin && gatewayId),
       refetchInterval: 30_000,
     },
   });
@@ -67,7 +85,7 @@ export default function GatewayDetailPage() {
     ApiError
   >(gatewayId ? { gateway_id: gatewayId } : undefined, {
     query: {
-      enabled: Boolean(isSignedIn && gatewayId),
+      enabled: Boolean(isSignedIn && isAdmin && gatewayId),
       refetchInterval: 15_000,
     },
   });
@@ -85,7 +103,7 @@ export default function GatewayDetailPage() {
     ApiError
   >(statusParams, {
     query: {
-      enabled: Boolean(isSignedIn && statusParams),
+      enabled: Boolean(isSignedIn && isAdmin && statusParams),
       refetchInterval: 15_000,
     },
   });
@@ -142,7 +160,7 @@ export default function GatewayDetailPage() {
                 >
                   Back to gateways
                 </Button>
-                {gatewayId ? (
+                {isAdmin && gatewayId ? (
                   <Button
                     onClick={() => router.push(`/gateways/${gatewayId}/edit`)}
                   >
@@ -154,7 +172,11 @@ export default function GatewayDetailPage() {
           </div>
 
           <div className="p-8">
-            {gatewayQuery.isLoading ? (
+            {!isAdmin ? (
+              <div className="rounded-xl border border-slate-200 bg-white px-6 py-5 text-sm text-slate-600 shadow-sm">
+                Only organization owners and admins can access gateways.
+              </div>
+            ) : gatewayQuery.isLoading ? (
               <div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-500 shadow-sm">
                 Loading gateway…
               </div>

@@ -45,6 +45,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { ApiError } from "@/api/mutator";
 import { streamAgentsApiV1AgentsStreamGet } from "@/api/generated/agents/agents";
 import {
   streamApprovalsApiV1BoardsBoardIdApprovalsStreamGet,
@@ -63,6 +64,10 @@ import {
   streamBoardMemoryApiV1BoardsBoardIdMemoryStreamGet,
 } from "@/api/generated/board-memory/board-memory";
 import {
+  type getMyMembershipApiV1OrganizationsMeMemberGetResponse,
+  useGetMyMembershipApiV1OrganizationsMeMemberGet,
+} from "@/api/generated/organizations/organizations";
+import {
   createTaskApiV1BoardsBoardIdTasksPost,
   createTaskCommentApiV1BoardsBoardIdTasksTaskIdCommentsPost,
   deleteTaskApiV1BoardsBoardIdTasksTaskIdDelete,
@@ -76,6 +81,7 @@ import type {
   BoardGroupSnapshot,
   BoardMemoryRead,
   BoardRead,
+  OrganizationMemberRead,
   TaskCardRead,
   TaskCommentRead,
   TaskRead,
@@ -166,6 +172,49 @@ const formatShortTimestamp = (value: string) => {
     hour: "2-digit",
     minute: "2-digit",
   });
+};
+
+type ToastMessage = {
+  id: number;
+  message: string;
+  tone: "error" | "success";
+};
+
+const formatActionError = (err: unknown, fallback: string) => {
+  if (err instanceof ApiError) {
+    if (err.status === 403) {
+      return "Read-only access. You do not have permission to make changes.";
+    }
+    return err.message || fallback;
+  }
+  if (err instanceof Error && err.message) {
+    return err.message;
+  }
+  return fallback;
+};
+
+const resolveBoardAccess = (
+  member: OrganizationMemberRead | null,
+  boardId?: string | null,
+) => {
+  if (!member || !boardId) {
+    return { canRead: false, canWrite: false };
+  }
+  if (member.all_boards_write) {
+    return { canRead: true, canWrite: true };
+  }
+  if (member.all_boards_read) {
+    return { canRead: true, canWrite: false };
+  }
+  const entry = member.board_access?.find(
+    (access) => access.board_id === boardId,
+  );
+  if (!entry) {
+    return { canRead: false, canWrite: false };
+  }
+  const canWrite = Boolean(entry.can_write);
+  const canRead = Boolean(entry.can_read || entry.can_write);
+  return { canRead, canWrite };
 };
 
 const TaskCommentCard = memo(function TaskCommentCard({
@@ -322,6 +371,31 @@ export default function BoardDetailPage() {
   const isPageActive = usePageActive();
   const taskIdFromUrl = searchParams.get("taskId");
 
+  const membershipQuery = useGetMyMembershipApiV1OrganizationsMeMemberGet<
+    getMyMembershipApiV1OrganizationsMeMemberGetResponse,
+    ApiError
+  >({
+    query: {
+      enabled: Boolean(isSignedIn),
+      refetchOnMount: "always",
+    },
+  });
+
+  const boardAccess = useMemo(
+    () =>
+      resolveBoardAccess(
+        membershipQuery.data?.status === 200 ? membershipQuery.data.data : null,
+        boardId,
+      ),
+    [membershipQuery.data, boardId],
+  );
+  const isOrgAdmin = useMemo(() => {
+    const member =
+      membershipQuery.data?.status === 200 ? membershipQuery.data.data : null;
+    return member ? ["owner", "admin"].includes(member.role) : false;
+  }, [membershipQuery.data]);
+  const canWrite = boardAccess.canWrite;
+
   const [board, setBoard] = useState<Board | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -387,7 +461,10 @@ export default function BoardDetailPage() {
   const [deleteTaskError, setDeleteTaskError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"board" | "list">("board");
   const [isLiveFeedOpen, setIsLiveFeedOpen] = useState(false);
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const isLiveFeedOpenRef = useRef(false);
+  const toastIdRef = useRef(0);
+  const toastTimersRef = useRef<Record<number, number>>({});
   const pushLiveFeed = useCallback((comment: TaskComment) => {
     const alreadySeen = liveFeedRef.current.some(
       (item) => item.id === comment.id,
@@ -423,6 +500,31 @@ export default function BoardDetailPage() {
     }, 2200);
   }, []);
 
+  const dismissToast = useCallback((id: number) => {
+    setToasts((prev) => prev.filter((toast) => toast.id !== id));
+    const timer = toastTimersRef.current[id];
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      delete toastTimersRef.current[id];
+    }
+  }, []);
+
+  const pushToast = useCallback(
+    (message: string, tone: ToastMessage["tone"] = "error") => {
+      const trimmed = message.trim();
+      if (!trimmed) return;
+      const id = toastIdRef.current + 1;
+      toastIdRef.current = id;
+      setToasts((prev) => [...prev, { id, message: trimmed, tone }]);
+      if (typeof window !== "undefined") {
+        toastTimersRef.current[id] = window.setTimeout(() => {
+          dismissToast(id);
+        }, 3500);
+      }
+    },
+    [dismissToast],
+  );
+
   useEffect(() => {
     liveFeedHistoryLoadedRef.current = false;
     setIsLiveFeedHistoryLoading(false);
@@ -445,6 +547,17 @@ export default function BoardDetailPage() {
         });
       }
       liveFeedFlashTimersRef.current = {};
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (typeof window !== "undefined") {
+        Object.values(toastTimersRef.current).forEach((timerId) => {
+          window.clearTimeout(timerId);
+        });
+      }
+      toastTimersRef.current = {};
     };
   }, []);
 
@@ -1269,7 +1382,7 @@ export default function BoardDetailPage() {
 
   useEffect(() => {
     if (!isPageActive) return;
-    if (!isSignedIn || !boardId) return;
+    if (!isSignedIn || !boardId || !isOrgAdmin) return;
     let isCancelled = false;
     const abortController = new AbortController();
     const backoff = createExponentialBackoff(SSE_RECONNECT_BACKOFF);
@@ -1372,7 +1485,7 @@ export default function BoardDetailPage() {
         window.clearTimeout(reconnectTimeout);
       }
     };
-  }, [board, boardId, isPageActive, isSignedIn]);
+  }, [board, boardId, isOrgAdmin, isPageActive, isSignedIn]);
 
   const resetForm = () => {
     setTitle("");
@@ -1411,9 +1524,9 @@ export default function BoardDetailPage() {
       setIsDialogOpen(false);
       resetForm();
     } catch (err) {
-      setCreateError(
-        err instanceof Error ? err.message : "Something went wrong.",
-      );
+      const message = formatActionError(err, "Something went wrong.");
+      setCreateError(message);
+      pushToast(message);
     } finally {
       setIsCreating(false);
     }
@@ -1454,8 +1567,7 @@ export default function BoardDetailPage() {
         }
         return { ok: true, error: null };
       } catch (err) {
-        const message =
-          err instanceof Error ? err.message : "Unable to send message.";
+        const message = formatActionError(err, "Unable to send message.");
         return { ok: false, error: message };
       }
     },
@@ -1473,6 +1585,7 @@ export default function BoardDetailPage() {
         if (!result.ok) {
           if (result.error) {
             setChatError(result.error);
+            pushToast(result.error);
           }
           return false;
         }
@@ -1481,7 +1594,7 @@ export default function BoardDetailPage() {
         setIsChatSending(false);
       }
     },
-    [postBoardChatMessage],
+    [postBoardChatMessage, pushToast],
   );
 
   const openAgentsControlDialog = (action: "pause" | "resume") => {
@@ -1497,16 +1610,16 @@ export default function BoardDetailPage() {
     try {
       const result = await postBoardChatMessage(command);
       if (!result.ok) {
-        setAgentsControlError(
-          result.error ?? `Unable to send ${command} command.`,
-        );
+        const message = result.error ?? `Unable to send ${command} command.`;
+        setAgentsControlError(message);
+        pushToast(message);
         return;
       }
       setIsAgentsControlDialogOpen(false);
     } finally {
       setIsAgentsControlSending(false);
     }
-  }, [agentsControlAction, postBoardChatMessage]);
+  }, [agentsControlAction, postBoardChatMessage, pushToast]);
 
   const assigneeById = useMemo(() => {
     const map = new Map<string, string>();
@@ -1746,9 +1859,9 @@ export default function BoardDetailPage() {
       setComments((prev) => [created, ...prev]);
       setNewComment("");
     } catch (err) {
-      setPostCommentError(
-        err instanceof Error ? err.message : "Unable to send message.",
-      );
+      const message = formatActionError(err, "Unable to send message.");
+      setPostCommentError(message);
+      pushToast(message);
     } finally {
       setIsPostingComment(false);
       taskCommentInputRef.current?.focus();
@@ -1830,9 +1943,9 @@ export default function BoardDetailPage() {
         setIsEditDialogOpen(false);
       }
     } catch (err) {
-      setSaveTaskError(
-        err instanceof Error ? err.message : "Something went wrong.",
-      );
+      const message = formatActionError(err, "Something went wrong.");
+      setSaveTaskError(message);
+      pushToast(message);
     } finally {
       setIsSavingTask(false);
     }
@@ -1863,9 +1976,9 @@ export default function BoardDetailPage() {
       setIsDeleteDialogOpen(false);
       closeComments();
     } catch (err) {
-      setDeleteTaskError(
-        err instanceof Error ? err.message : "Something went wrong.",
-      );
+      const message = formatActionError(err, "Something went wrong.");
+      setDeleteTaskError(message);
+      pushToast(message);
     } finally {
       setIsDeletingTask(false);
     }
@@ -1936,10 +2049,12 @@ export default function BoardDetailPage() {
         );
       } catch (err) {
         setTasks(previousTasks);
-        setError(err instanceof Error ? err.message : "Unable to move task.");
+        const message = formatActionError(err, "Unable to move task.");
+        setError(message);
+        pushToast(message);
       }
     },
-    [boardId, isSignedIn, taskTitleById],
+    [boardId, isSignedIn, pushToast, taskTitleById],
   );
 
   const agentInitials = (agent: Agent) =>
@@ -2085,6 +2200,12 @@ export default function BoardDetailPage() {
   const handleApprovalDecision = useCallback(
     async (approvalId: string, status: "approved" | "rejected") => {
       if (!isSignedIn || !boardId) return;
+      if (!canWrite) {
+        pushToast(
+          "Read-only access. You do not have permission to update approvals.",
+        );
+        return;
+      }
       setApprovalsUpdatingId(approvalId);
       setApprovalsError(null);
       try {
@@ -2102,14 +2223,14 @@ export default function BoardDetailPage() {
           prev.map((item) => (item.id === approvalId ? updated : item)),
         );
       } catch (err) {
-        setApprovalsError(
-          err instanceof Error ? err.message : "Unable to update approval.",
-        );
+        const message = formatActionError(err, "Unable to update approval.");
+        setApprovalsError(message);
+        pushToast(message);
       } finally {
         setApprovalsUpdatingId(null);
       }
     },
-    [boardId, isSignedIn],
+    [boardId, canWrite, isSignedIn, pushToast],
   );
 
   return (
@@ -2174,7 +2295,8 @@ export default function BoardDetailPage() {
                     onClick={() => setIsDialogOpen(true)}
                     className="h-9 w-9 p-0"
                     aria-label="New task"
-                    title="New task"
+                    title={canWrite ? "New task" : "Read-only access"}
+                    disabled={!canWrite}
                   >
                     <Plus className="h-4 w-4" />
                   </Button>
@@ -2192,31 +2314,44 @@ export default function BoardDetailPage() {
                       </span>
                     ) : null}
                   </Button>
-                  <Button
-                    variant="outline"
-                    onClick={() =>
-                      openAgentsControlDialog(
-                        isAgentsPaused ? "resume" : "pause",
-                      )
-                    }
-                    disabled={!isSignedIn || !boardId || isAgentsControlSending}
-                    className={cn(
-                      "h-9 w-9 p-0",
-                      isAgentsPaused
-                        ? "border-amber-200 bg-amber-50/60 text-amber-700 hover:border-amber-300 hover:bg-amber-50 hover:text-amber-800"
-                        : "",
-                    )}
-                    aria-label={
-                      isAgentsPaused ? "Resume agents" : "Pause agents"
-                    }
-                    title={isAgentsPaused ? "Resume agents" : "Pause agents"}
-                  >
-                    {isAgentsPaused ? (
-                      <Play className="h-4 w-4" />
-                    ) : (
-                      <Pause className="h-4 w-4" />
-                    )}
-                  </Button>
+                  {isOrgAdmin ? (
+                    <Button
+                      variant="outline"
+                      onClick={() =>
+                        openAgentsControlDialog(
+                          isAgentsPaused ? "resume" : "pause",
+                        )
+                      }
+                      disabled={
+                        !isSignedIn ||
+                        !boardId ||
+                        isAgentsControlSending ||
+                        !canWrite
+                      }
+                      className={cn(
+                        "h-9 w-9 p-0",
+                        isAgentsPaused
+                          ? "border-amber-200 bg-amber-50/60 text-amber-700 hover:border-amber-300 hover:bg-amber-50 hover:text-amber-800"
+                          : "",
+                      )}
+                      aria-label={
+                        isAgentsPaused ? "Resume agents" : "Pause agents"
+                      }
+                      title={
+                        canWrite
+                          ? isAgentsPaused
+                            ? "Resume agents"
+                            : "Pause agents"
+                          : "Read-only access"
+                      }
+                    >
+                      {isAgentsPaused ? (
+                        <Play className="h-4 w-4" />
+                      ) : (
+                        <Pause className="h-4 w-4" />
+                      )}
+                    </Button>
+                  ) : null}
                   <Button
                     variant="outline"
                     onClick={openBoardChat}
@@ -2235,83 +2370,87 @@ export default function BoardDetailPage() {
                   >
                     <Activity className="h-4 w-4" />
                   </Button>
-                  <button
-                    type="button"
-                    onClick={() => router.push(`/boards/${boardId}/edit`)}
-                    className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
-                    aria-label="Board settings"
-                    title="Board settings"
-                  >
-                    <Settings className="h-4 w-4" />
-                  </button>
+                  {isOrgAdmin ? (
+                    <button
+                      type="button"
+                      onClick={() => router.push(`/boards/${boardId}/edit`)}
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
+                      aria-label="Board settings"
+                      title="Board settings"
+                    >
+                      <Settings className="h-4 w-4" />
+                    </button>
+                  ) : null}
                 </div>
               </div>
             </div>
           </div>
 
           <div className="relative flex gap-6 p-6">
-            <aside className="flex h-full w-64 flex-col rounded-xl border border-slate-200 bg-white shadow-sm">
-              <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                    Agents
-                  </p>
-                  <p className="text-xs text-slate-400">
-                    {sortedAgents.length} total
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => router.push("/agents/new")}
-                  className="rounded-md border border-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
-                >
-                  Add
-                </button>
-              </div>
-              <div className="flex-1 space-y-2 overflow-y-auto p-3">
-                {sortedAgents.length === 0 ? (
-                  <div className="rounded-lg border border-dashed border-slate-200 p-3 text-xs text-slate-500">
-                    No agents assigned yet.
+            {isOrgAdmin ? (
+              <aside className="flex h-full w-64 flex-col rounded-xl border border-slate-200 bg-white shadow-sm">
+                <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                      Agents
+                    </p>
+                    <p className="text-xs text-slate-400">
+                      {sortedAgents.length} total
+                    </p>
                   </div>
-                ) : (
-                  sortedAgents.map((agent) => {
-                    const isWorking = workingAgentIds.has(agent.id);
-                    return (
-                      <button
-                        key={agent.id}
-                        type="button"
-                        className={cn(
-                          "flex w-full items-center gap-3 rounded-lg border border-transparent px-2 py-2 text-left transition hover:border-slate-200 hover:bg-slate-50",
-                        )}
-                        onClick={() => router.push(`/agents/${agent.id}`)}
-                      >
-                        <div className="relative flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-700">
-                          {agentAvatarLabel(agent)}
-                          <span
-                            className={cn(
-                              "absolute -right-0.5 -bottom-0.5 h-2.5 w-2.5 rounded-full border-2 border-white",
-                              isWorking
-                                ? "bg-emerald-500"
-                                : agent.status === "online"
-                                  ? "bg-green-500"
-                                  : "bg-slate-300",
-                            )}
-                          />
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-medium text-slate-900">
-                            {agent.name}
-                          </p>
-                          <p className="text-[11px] text-slate-500">
-                            {agentRoleLabel(agent)}
-                          </p>
-                        </div>
-                      </button>
-                    );
-                  })
-                )}
-              </div>
-            </aside>
+                  <button
+                    type="button"
+                    onClick={() => router.push("/agents/new")}
+                    className="rounded-md border border-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
+                  >
+                    Add
+                  </button>
+                </div>
+                <div className="flex-1 space-y-2 overflow-y-auto p-3">
+                  {sortedAgents.length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-slate-200 p-3 text-xs text-slate-500">
+                      No agents assigned yet.
+                    </div>
+                  ) : (
+                    sortedAgents.map((agent) => {
+                      const isWorking = workingAgentIds.has(agent.id);
+                      return (
+                        <button
+                          key={agent.id}
+                          type="button"
+                          className={cn(
+                            "flex w-full items-center gap-3 rounded-lg border border-transparent px-2 py-2 text-left transition hover:border-slate-200 hover:bg-slate-50",
+                          )}
+                          onClick={() => router.push(`/agents/${agent.id}`)}
+                        >
+                          <div className="relative flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-700">
+                            {agentAvatarLabel(agent)}
+                            <span
+                              className={cn(
+                                "absolute -right-0.5 -bottom-0.5 h-2.5 w-2.5 rounded-full border-2 border-white",
+                                isWorking
+                                  ? "bg-emerald-500"
+                                  : agent.status === "online"
+                                    ? "bg-green-500"
+                                    : "bg-slate-300",
+                              )}
+                            />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-medium text-slate-900">
+                              {agent.name}
+                            </p>
+                            <p className="text-[11px] text-slate-500">
+                              {agentRoleLabel(agent)}
+                            </p>
+                          </div>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              </aside>
+            ) : null}
 
             <div className="min-w-0 flex-1 space-y-6">
               {error && (
@@ -2364,16 +2503,18 @@ export default function BoardDetailPage() {
                                 >
                                   View group
                                 </Button>
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() =>
-                                    router.push(`/boards/${boardId}/edit`)
-                                  }
-                                  disabled={!boardId}
-                                >
-                                  Settings
-                                </Button>
+                                {isOrgAdmin ? (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() =>
+                                      router.push(`/boards/${boardId}/edit`)
+                                    }
+                                    disabled={!boardId}
+                                  >
+                                    Settings
+                                  </Button>
+                                ) : null}
                               </div>
                             </div>
                           </div>
@@ -2528,7 +2669,8 @@ export default function BoardDetailPage() {
                     <TaskBoard
                       tasks={tasks}
                       onTaskSelect={openComments}
-                      onTaskMove={handleTaskMove}
+                      onTaskMove={canWrite ? handleTaskMove : undefined}
+                      readOnly={!canWrite}
                     />
                   ) : (
                     <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
@@ -2546,7 +2688,8 @@ export default function BoardDetailPage() {
                             variant="outline"
                             size="sm"
                             onClick={() => setIsDialogOpen(true)}
-                            disabled={isCreating}
+                            disabled={isCreating || !canWrite}
+                            title={canWrite ? "New task" : "Read-only access"}
                           >
                             New task
                           </Button>
@@ -2660,7 +2803,8 @@ export default function BoardDetailPage() {
                 type="button"
                 onClick={() => setIsEditDialogOpen(true)}
                 className="rounded-lg border border-slate-200 p-2 text-slate-500 transition hover:bg-slate-50"
-                disabled={!selectedTask}
+                disabled={!selectedTask || !canWrite}
+                title={canWrite ? "Edit task" : "Read-only access"}
               >
                 <Pencil className="h-4 w-4" />
               </button>
@@ -2826,7 +2970,10 @@ export default function BoardDetailPage() {
                             onClick={() =>
                               handleApprovalDecision(approval.id, "approved")
                             }
-                            disabled={approvalsUpdatingId === approval.id}
+                            disabled={
+                              approvalsUpdatingId === approval.id || !canWrite
+                            }
+                            title={canWrite ? "Approve" : "Read-only access"}
                           >
                             Approve
                           </Button>
@@ -2836,7 +2983,10 @@ export default function BoardDetailPage() {
                             onClick={() =>
                               handleApprovalDecision(approval.id, "rejected")
                             }
-                            disabled={approvalsUpdatingId === approval.id}
+                            disabled={
+                              approvalsUpdatingId === approval.id || !canWrite
+                            }
+                            title={canWrite ? "Reject" : "Read-only access"}
                             className="border-slate-300 text-slate-700"
                           >
                             Reject
@@ -2861,22 +3011,36 @@ export default function BoardDetailPage() {
                     if (event.key !== "Enter") return;
                     if (event.nativeEvent.isComposing) return;
                     if (event.shiftKey) return;
+                    if (!canWrite) return;
                     event.preventDefault();
                     if (isPostingComment) return;
                     if (!newComment.trim()) return;
                     void handlePostComment();
                   }}
-                  placeholder="Write a message for the assigned agent…"
+                  placeholder={
+                    canWrite
+                      ? "Write a message for the assigned agent…"
+                      : "Read-only access. Comments are disabled."
+                  }
                   className="min-h-[80px] bg-white"
+                  disabled={!canWrite || isPostingComment}
                 />
                 {postCommentError ? (
                   <p className="text-xs text-rose-600">{postCommentError}</p>
+                ) : null}
+                {!canWrite ? (
+                  <p className="text-xs text-slate-500">
+                    Read-only access. You cannot post comments on this board.
+                  </p>
                 ) : null}
                 <div className="flex justify-end">
                   <Button
                     size="sm"
                     onClick={handlePostComment}
-                    disabled={isPostingComment || !newComment.trim()}
+                    disabled={
+                      !canWrite || isPostingComment || !newComment.trim()
+                    }
+                    title={canWrite ? "Send message" : "Read-only access"}
                   >
                     {isPostingComment ? "Sending…" : "Send message"}
                   </Button>
@@ -2956,6 +3120,12 @@ export default function BoardDetailPage() {
             <BoardChatComposer
               isSending={isChatSending}
               onSend={handleSendChat}
+              disabled={!canWrite}
+              placeholder={
+                canWrite
+                  ? "Message the board lead. Tag agents with @name."
+                  : "Read-only access. Chat is disabled."
+              }
             />
           </div>
         </div>
@@ -3052,7 +3222,7 @@ export default function BoardDetailPage() {
                 value={editTitle}
                 onChange={(event) => setEditTitle(event.target.value)}
                 placeholder="Task title"
-                disabled={!selectedTask || isSavingTask}
+                disabled={!selectedTask || isSavingTask || !canWrite}
               />
             </div>
             <div className="space-y-2">
@@ -3064,7 +3234,7 @@ export default function BoardDetailPage() {
                 onChange={(event) => setEditDescription(event.target.value)}
                 placeholder="Task details"
                 className="min-h-[140px]"
-                disabled={!selectedTask || isSavingTask}
+                disabled={!selectedTask || isSavingTask || !canWrite}
               />
             </div>
             <div className="grid gap-4 md:grid-cols-2">
@@ -3075,7 +3245,7 @@ export default function BoardDetailPage() {
                 <Select
                   value={editStatus}
                   onValueChange={(value) => setEditStatus(value as TaskStatus)}
-                  disabled={!selectedTask || isSavingTask}
+                  disabled={!selectedTask || isSavingTask || !canWrite}
                 >
                   <SelectTrigger>
                     <SelectValue placeholder="Select status" />
@@ -3096,7 +3266,7 @@ export default function BoardDetailPage() {
                 <Select
                   value={editPriority}
                   onValueChange={setEditPriority}
-                  disabled={!selectedTask || isSavingTask}
+                  disabled={!selectedTask || isSavingTask || !canWrite}
                 >
                   <SelectTrigger>
                     <SelectValue placeholder="Select priority" />
@@ -3120,7 +3290,7 @@ export default function BoardDetailPage() {
                 onValueChange={(value) =>
                   setEditAssigneeId(value === "unassigned" ? "" : value)
                 }
-                disabled={!selectedTask || isSavingTask}
+                disabled={!selectedTask || isSavingTask || !canWrite}
               >
                 <SelectTrigger>
                   <SelectValue placeholder="Unassigned" />
@@ -3155,7 +3325,8 @@ export default function BoardDetailPage() {
                 disabled={
                   !selectedTask ||
                   isSavingTask ||
-                  selectedTask.status === "done"
+                  selectedTask.status === "done" ||
+                  !canWrite
                 }
                 emptyMessage="No other tasks found."
               />
@@ -3195,8 +3366,14 @@ export default function BoardDetailPage() {
                           <button
                             type="button"
                             onClick={() => removeTaskDependency(depId)}
-                            className="rounded-full p-0.5 text-slate-500 transition hover:bg-white hover:text-slate-700"
+                            className={cn(
+                              "rounded-full p-0.5 text-slate-500 transition",
+                              canWrite
+                                ? "hover:bg-white hover:text-slate-700"
+                                : "opacity-50 cursor-not-allowed",
+                            )}
                             aria-label="Remove dependency"
+                            disabled={!canWrite}
                           >
                             <X className="h-3 w-3" />
                           </button>
@@ -3217,21 +3394,26 @@ export default function BoardDetailPage() {
             <Button
               variant="outline"
               onClick={() => setIsDeleteDialogOpen(true)}
-              disabled={!selectedTask || isSavingTask}
+              disabled={!selectedTask || isSavingTask || !canWrite}
               className="border-rose-200 text-rose-600 hover:border-rose-300 hover:text-rose-700"
+              title={canWrite ? "Delete task" : "Read-only access"}
             >
               Delete task
             </Button>
             <Button
               variant="outline"
               onClick={handleTaskReset}
-              disabled={!selectedTask || isSavingTask || !hasTaskChanges}
+              disabled={
+                !selectedTask || isSavingTask || !hasTaskChanges || !canWrite
+              }
             >
               Reset
             </Button>
             <Button
               onClick={() => handleTaskSave(true)}
-              disabled={!selectedTask || isSavingTask || !hasTaskChanges}
+              disabled={
+                !selectedTask || isSavingTask || !hasTaskChanges || !canWrite
+              }
             >
               {isSavingTask ? "Saving…" : "Save changes"}
             </Button>
@@ -3262,7 +3444,7 @@ export default function BoardDetailPage() {
             </Button>
             <Button
               onClick={handleDeleteTask}
-              disabled={isDeletingTask}
+              disabled={isDeletingTask || !canWrite}
               className="bg-rose-600 text-white hover:bg-rose-700"
             >
               {isDeletingTask ? "Deleting…" : "Delete task"}
@@ -3294,6 +3476,7 @@ export default function BoardDetailPage() {
                 value={title}
                 onChange={(event) => setTitle(event.target.value)}
                 placeholder="e.g. Prepare launch notes"
+                disabled={!canWrite || isCreating}
               />
             </div>
             <div className="space-y-2">
@@ -3305,13 +3488,18 @@ export default function BoardDetailPage() {
                 onChange={(event) => setDescription(event.target.value)}
                 placeholder="Optional details"
                 className="min-h-[120px]"
+                disabled={!canWrite || isCreating}
               />
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium text-strong">
                 Priority
               </label>
-              <Select value={priority} onValueChange={setPriority}>
+              <Select
+                value={priority}
+                onValueChange={setPriority}
+                disabled={!canWrite || isCreating}
+              >
                 <SelectTrigger>
                   <SelectValue placeholder="Select priority" />
                 </SelectTrigger>
@@ -3334,77 +3522,117 @@ export default function BoardDetailPage() {
             <Button variant="outline" onClick={() => setIsDialogOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={handleCreateTask} disabled={isCreating}>
+            <Button
+              onClick={handleCreateTask}
+              disabled={!canWrite || isCreating}
+            >
               {isCreating ? "Creating…" : "Create task"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      <Dialog
-        open={isAgentsControlDialogOpen}
-        onOpenChange={(nextOpen) => {
-          setIsAgentsControlDialogOpen(nextOpen);
-          if (!nextOpen) {
-            setAgentsControlError(null);
-          }
-        }}
-      >
-        <DialogContent aria-label="Agent controls">
-          <DialogHeader>
-            <DialogTitle>
-              {agentsControlAction === "pause"
-                ? "Pause agents"
-                : "Resume agents"}
-            </DialogTitle>
-            <DialogDescription>
-              {agentsControlAction === "pause"
-                ? "Send /pause to every agent on this board."
-                : "Send /resume to every agent on this board."}
-            </DialogDescription>
-          </DialogHeader>
-
-          {agentsControlError ? (
-            <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
-              {agentsControlError}
-            </div>
-          ) : null}
-
-          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
-            <p className="font-semibold text-slate-900">What happens</p>
-            <ul className="mt-2 list-disc space-y-1 pl-5">
-              <li>
-                This posts{" "}
-                <span className="font-mono">
-                  {agentsControlAction === "pause" ? "/pause" : "/resume"}
-                </span>{" "}
-                to board chat.
-              </li>
-              <li>Mission Control forwards it to all agents on this board.</li>
-            </ul>
-          </div>
-
-          <DialogFooter className="flex flex-wrap gap-2">
-            <Button
-              variant="outline"
-              onClick={() => setIsAgentsControlDialogOpen(false)}
-              disabled={isAgentsControlSending}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleConfirmAgentsControl}
-              disabled={isAgentsControlSending}
-            >
-              {isAgentsControlSending
-                ? "Sending…"
-                : agentsControlAction === "pause"
+      {isOrgAdmin ? (
+        <Dialog
+          open={isAgentsControlDialogOpen}
+          onOpenChange={(nextOpen) => {
+            setIsAgentsControlDialogOpen(nextOpen);
+            if (!nextOpen) {
+              setAgentsControlError(null);
+            }
+          }}
+        >
+          <DialogContent aria-label="Agent controls">
+            <DialogHeader>
+              <DialogTitle>
+                {agentsControlAction === "pause"
                   ? "Pause agents"
                   : "Resume agents"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+              </DialogTitle>
+              <DialogDescription>
+                {agentsControlAction === "pause"
+                  ? "Send /pause to every agent on this board."
+                  : "Send /resume to every agent on this board."}
+              </DialogDescription>
+            </DialogHeader>
+
+            {agentsControlError ? (
+              <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+                {agentsControlError}
+              </div>
+            ) : null}
+
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+              <p className="font-semibold text-slate-900">What happens</p>
+              <ul className="mt-2 list-disc space-y-1 pl-5">
+                <li>
+                  This posts{" "}
+                  <span className="font-mono">
+                    {agentsControlAction === "pause" ? "/pause" : "/resume"}
+                  </span>{" "}
+                  to board chat.
+                </li>
+                <li>
+                  Mission Control forwards it to all agents on this board.
+                </li>
+              </ul>
+            </div>
+
+            <DialogFooter className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                onClick={() => setIsAgentsControlDialogOpen(false)}
+                disabled={isAgentsControlSending}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleConfirmAgentsControl}
+                disabled={isAgentsControlSending}
+              >
+                {isAgentsControlSending
+                  ? "Sending…"
+                  : agentsControlAction === "pause"
+                    ? "Pause agents"
+                    : "Resume agents"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      ) : null}
+
+      {toasts.length ? (
+        <div className="fixed bottom-6 right-6 z-[60] flex w-[320px] max-w-[90vw] flex-col gap-3">
+          {toasts.map((toast) => (
+            <div
+              key={toast.id}
+              className={cn(
+                "rounded-xl border bg-white px-4 py-3 text-sm shadow-lush",
+                toast.tone === "error"
+                  ? "border-rose-200 text-rose-700"
+                  : "border-emerald-200 text-emerald-700",
+              )}
+            >
+              <div className="flex items-start gap-3">
+                <span
+                  className={cn(
+                    "mt-1 h-2 w-2 rounded-full",
+                    toast.tone === "error" ? "bg-rose-500" : "bg-emerald-500",
+                  )}
+                />
+                <p className="flex-1 text-sm text-slate-700">{toast.message}</p>
+                <button
+                  type="button"
+                  className="text-xs text-slate-400 hover:text-slate-600"
+                  onClick={() => dismissToast(toast.id)}
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       {/* onboarding moved to board settings */}
     </DashboardShell>

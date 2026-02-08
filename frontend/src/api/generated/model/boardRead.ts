@@ -18,6 +18,7 @@ export interface BoardRead {
   goal_confirmed?: boolean;
   goal_source?: string | null;
   id: string;
+  organization_id: string;
   created_at: string;
   updated_at: string;
 }

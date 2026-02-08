@@ -334,7 +334,6 @@ async def list_task_comments(
     return await tasks_api.list_task_comments(
         task=task,
         session=session,
-        actor=_actor(agent_ctx),
     )
 
 

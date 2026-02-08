@@ -12,8 +12,13 @@ from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
-from app.api.deps import ActorContext, get_board_or_404, require_admin_auth, require_admin_or_agent
-from app.core.auth import AuthContext
+from app.api.deps import (
+    ActorContext,
+    get_board_for_actor_read,
+    get_board_for_actor_write,
+    get_board_for_user_write,
+    require_admin_or_agent,
+)
 from app.core.time import utcnow
 from app.db.pagination import paginate
 from app.db.session import async_session_maker, get_session
@@ -88,13 +93,10 @@ async def _fetch_approval_events(
 @router.get("", response_model=DefaultLimitOffsetPage[ApprovalRead])
 async def list_approvals(
     status_filter: ApprovalStatus | None = Query(default=None, alias="status"),
-    board: Board = Depends(get_board_or_404),
+    board: Board = Depends(get_board_for_actor_read),
     session: AsyncSession = Depends(get_session),
     actor: ActorContext = Depends(require_admin_or_agent),
 ) -> DefaultLimitOffsetPage[ApprovalRead]:
-    if actor.actor_type == "agent" and actor.agent:
-        if actor.agent.board_id and actor.agent.board_id != board.id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     statement = select(Approval).where(col(Approval.board_id) == board.id)
     if status_filter:
         statement = statement.where(col(Approval.status) == status_filter)
@@ -105,13 +107,10 @@ async def list_approvals(
 @router.get("/stream")
 async def stream_approvals(
     request: Request,
-    board: Board = Depends(get_board_or_404),
+    board: Board = Depends(get_board_for_actor_read),
     actor: ActorContext = Depends(require_admin_or_agent),
     since: str | None = Query(default=None),
 ) -> EventSourceResponse:
-    if actor.actor_type == "agent" and actor.agent:
-        if actor.agent.board_id and actor.agent.board_id != board.id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     since_dt = _parse_since(since) or utcnow()
     last_seen = since_dt
 
@@ -180,13 +179,10 @@ async def stream_approvals(
 @router.post("", response_model=ApprovalRead)
 async def create_approval(
     payload: ApprovalCreate,
-    board: Board = Depends(get_board_or_404),
+    board: Board = Depends(get_board_for_actor_write),
     session: AsyncSession = Depends(get_session),
     actor: ActorContext = Depends(require_admin_or_agent),
 ) -> Approval:
-    if actor.actor_type == "agent" and actor.agent:
-        if actor.agent.board_id and actor.agent.board_id != board.id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     task_id = payload.task_id or _extract_task_id(payload.payload)
     approval = Approval(
         board_id=board.id,
@@ -208,9 +204,8 @@ async def create_approval(
 async def update_approval(
     approval_id: str,
     payload: ApprovalUpdate,
-    board: Board = Depends(get_board_or_404),
+    board: Board = Depends(get_board_for_user_write),
     session: AsyncSession = Depends(get_session),
-    auth: AuthContext = Depends(require_admin_auth),
 ) -> Approval:
     approval = await session.get(Approval, approval_id)
     if approval is None or approval.board_id != board.id:

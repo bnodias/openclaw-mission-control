@@ -49,6 +49,7 @@ class GatewayUpdate(SQLModel):
 
 class GatewayRead(GatewayBase):
     id: UUID
+    organization_id: UUID
     token: str | None = None
     created_at: datetime
     updated_at: datetime

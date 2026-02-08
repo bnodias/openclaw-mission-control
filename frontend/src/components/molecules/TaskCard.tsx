@@ -93,8 +93,10 @@ export function TaskCard({
         />
       ) : null}
       <div className="flex items-start justify-between gap-3">
-        <div className="space-y-2">
-          <p className="text-sm font-medium text-slate-900">{title}</p>
+        <div className="min-w-0 space-y-2">
+          <p className="text-sm font-medium text-slate-900 line-clamp-2 break-words">
+            {title}
+          </p>
           {isBlocked ? (
             <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wide text-rose-700">
               <span className="h-1.5 w-1.5 rounded-full bg-rose-500" />
@@ -114,7 +116,7 @@ export function TaskCard({
             </div>
           ) : null}
         </div>
-        <div className="flex flex-col items-end gap-2">
+        <div className="flex flex-shrink-0 flex-col items-end gap-2">
           <span
             className={cn(
               "inline-flex items-center rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-wide",

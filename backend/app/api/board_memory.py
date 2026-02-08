@@ -6,13 +6,18 @@ from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
-from app.api.deps import ActorContext, get_board_or_404, require_admin_or_agent
+from app.api.deps import (
+    ActorContext,
+    get_board_for_actor_read,
+    get_board_for_actor_write,
+    require_admin_or_agent,
+)
 from app.core.config import settings
 from app.core.time import utcnow
 from app.db.pagination import paginate
@@ -178,13 +183,10 @@ async def _notify_chat_targets(
 @router.get("", response_model=DefaultLimitOffsetPage[BoardMemoryRead])
 async def list_board_memory(
     is_chat: bool | None = Query(default=None),
-    board: Board = Depends(get_board_or_404),
+    board: Board = Depends(get_board_for_actor_read),
     session: AsyncSession = Depends(get_session),
     actor: ActorContext = Depends(require_admin_or_agent),
 ) -> DefaultLimitOffsetPage[BoardMemoryRead]:
-    if actor.actor_type == "agent" and actor.agent:
-        if actor.agent.board_id and actor.agent.board_id != board.id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     statement = (
         select(BoardMemory).where(col(BoardMemory.board_id) == board.id)
         # Old/invalid rows (empty/whitespace-only content) can exist; exclude them to
@@ -200,14 +202,11 @@ async def list_board_memory(
 @router.get("/stream")
 async def stream_board_memory(
     request: Request,
-    board: Board = Depends(get_board_or_404),
+    board: Board = Depends(get_board_for_actor_read),
     actor: ActorContext = Depends(require_admin_or_agent),
     since: str | None = Query(default=None),
     is_chat: bool | None = Query(default=None),
 ) -> EventSourceResponse:
-    if actor.actor_type == "agent" and actor.agent:
-        if actor.agent.board_id and actor.agent.board_id != board.id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     since_dt = _parse_since(since) or utcnow()
     last_seen = since_dt
 
@@ -236,13 +235,10 @@ async def stream_board_memory(
 @router.post("", response_model=BoardMemoryRead)
 async def create_board_memory(
     payload: BoardMemoryCreate,
-    board: Board = Depends(get_board_or_404),
+    board: Board = Depends(get_board_for_actor_write),
     session: AsyncSession = Depends(get_session),
     actor: ActorContext = Depends(require_admin_or_agent),
 ) -> BoardMemory:
-    if actor.actor_type == "agent" and actor.agent:
-        if actor.agent.board_id and actor.agent.board_id != board.id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     is_chat = payload.tags is not None and "chat" in payload.tags
     source = payload.source
     if is_chat and not source:

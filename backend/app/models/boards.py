@@ -14,6 +14,7 @@ class Board(TenantScoped, table=True):
     __tablename__ = "boards"
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
+    organization_id: UUID = Field(foreign_key="organizations.id", index=True)
     name: str
     slug: str = Field(index=True)
     gateway_id: UUID | None = Field(default=None, foreign_key="gateways.id", index=True)

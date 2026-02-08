@@ -8,11 +8,17 @@ import {
   Bot,
   CheckCircle2,
   Folder,
+  Building2,
   LayoutGrid,
   Network,
 } from "lucide-react";
 
+import { useAuth } from "@/auth/clerk";
 import { ApiError } from "@/api/mutator";
+import {
+  type getMyMembershipApiV1OrganizationsMeMemberGetResponse,
+  useGetMyMembershipApiV1OrganizationsMeMemberGet,
+} from "@/api/generated/organizations/organizations";
 import {
   type healthzHealthzGetResponse,
   useHealthzHealthzGet,
@@ -21,6 +27,20 @@ import { cn } from "@/lib/utils";
 
 export function DashboardSidebar() {
   const pathname = usePathname();
+  const { isSignedIn } = useAuth();
+  const membershipQuery = useGetMyMembershipApiV1OrganizationsMeMemberGet<
+    getMyMembershipApiV1OrganizationsMeMemberGetResponse,
+    ApiError
+  >({
+    query: {
+      enabled: Boolean(isSignedIn),
+      refetchOnMount: "always",
+      retry: false,
+    },
+  });
+  const member =
+    membershipQuery.data?.status === 200 ? membershipQuery.data.data : null;
+  const isAdmin = member ? ["owner", "admin"].includes(member.role) : false;
   const healthQuery = useHealthzHealthzGet<healthzHealthzGetResponse, ApiError>(
     {
       query: {
@@ -67,18 +87,20 @@ export function DashboardSidebar() {
             <BarChart3 className="h-4 w-4" />
             Dashboard
           </Link>
-          <Link
-            href="/gateways"
-            className={cn(
-              "flex items-center gap-3 rounded-lg px-3 py-2.5 text-slate-700 transition",
-              pathname.startsWith("/gateways")
-                ? "bg-blue-100 text-blue-800 font-medium"
-                : "hover:bg-slate-100",
-            )}
-          >
-            <Network className="h-4 w-4" />
-            Gateways
-          </Link>
+          {isAdmin ? (
+            <Link
+              href="/gateways"
+              className={cn(
+                "flex items-center gap-3 rounded-lg px-3 py-2.5 text-slate-700 transition",
+                pathname.startsWith("/gateways")
+                  ? "bg-blue-100 text-blue-800 font-medium"
+                  : "hover:bg-slate-100",
+              )}
+            >
+              <Network className="h-4 w-4" />
+              Gateways
+            </Link>
+          ) : null}
           <Link
             href="/board-groups"
             className={cn(
@@ -104,6 +126,18 @@ export function DashboardSidebar() {
             Boards
           </Link>
           <Link
+            href="/organization"
+            className={cn(
+              "flex items-center gap-3 rounded-lg px-3 py-2.5 text-slate-700 transition",
+              pathname.startsWith("/organization")
+                ? "bg-blue-100 text-blue-800 font-medium"
+                : "hover:bg-slate-100",
+            )}
+          >
+            <Building2 className="h-4 w-4" />
+            Organization
+          </Link>
+          <Link
             href="/approvals"
             className={cn(
               "flex items-center gap-3 rounded-lg px-3 py-2.5 text-slate-700 transition",
@@ -127,18 +161,20 @@ export function DashboardSidebar() {
             <Activity className="h-4 w-4" />
             Live feed
           </Link>
-          <Link
-            href="/agents"
-            className={cn(
-              "flex items-center gap-3 rounded-lg px-3 py-2.5 text-slate-700 transition",
-              pathname.startsWith("/agents")
-                ? "bg-blue-100 text-blue-800 font-medium"
-                : "hover:bg-slate-100",
-            )}
-          >
-            <Bot className="h-4 w-4" />
-            Agents
-          </Link>
+          {isAdmin ? (
+            <Link
+              href="/agents"
+              className={cn(
+                "flex items-center gap-3 rounded-lg px-3 py-2.5 text-slate-700 transition",
+                pathname.startsWith("/agents")
+                  ? "bg-blue-100 text-blue-800 font-medium"
+                  : "hover:bg-slate-100",
+              )}
+            >
+              <Bot className="h-4 w-4" />
+              Agents
+            </Link>
+          ) : null}
         </nav>
       </div>
       <div className="border-t border-slate-200 p-4">

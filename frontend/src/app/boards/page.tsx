@@ -25,6 +25,10 @@ import {
   type listBoardGroupsApiV1BoardGroupsGetResponse,
   useListBoardGroupsApiV1BoardGroupsGet,
 } from "@/api/generated/board-groups/board-groups";
+import {
+  type getMyMembershipApiV1OrganizationsMeMemberGetResponse,
+  useGetMyMembershipApiV1OrganizationsMeMemberGet,
+} from "@/api/generated/organizations/organizations";
 import type { BoardGroupRead, BoardRead } from "@/api/generated/model";
 import { DashboardSidebar } from "@/components/organisms/DashboardSidebar";
 import { DashboardShell } from "@/components/templates/DashboardShell";
@@ -56,6 +60,20 @@ const compactId = (value: string) =>
 export default function BoardsPage() {
   const { isSignedIn } = useAuth();
   const queryClient = useQueryClient();
+
+  const membershipQuery = useGetMyMembershipApiV1OrganizationsMeMemberGet<
+    getMyMembershipApiV1OrganizationsMeMemberGetResponse,
+    ApiError
+  >({
+    query: {
+      enabled: Boolean(isSignedIn),
+      refetchOnMount: "always",
+      retry: false,
+    },
+  });
+  const member =
+    membershipQuery.data?.status === 200 ? membershipQuery.data.data : null;
+  const isAdmin = member ? ["owner", "admin"].includes(member.role) : false;
   const [deleteTarget, setDeleteTarget] = useState<BoardRead | null>(null);
 
   const boardsKey = getListBoardsApiV1BoardsGetQueryKey();
@@ -264,7 +282,7 @@ export default function BoardsPage() {
                     {boards.length === 1 ? "" : "s"} total.
                   </p>
                 </div>
-                {boards.length > 0 ? (
+                {boards.length > 0 && isAdmin ? (
                   <Link
                     href="/boards/new"
                     className={buttonVariants({

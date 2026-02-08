@@ -12,6 +12,7 @@ class Gateway(SQLModel, table=True):
     __tablename__ = "gateways"
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
+    organization_id: UUID = Field(foreign_key="organizations.id", index=True)
     name: str
     url: str
     token: str | None = Field(default=None)

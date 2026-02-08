@@ -97,6 +97,9 @@ async def get_auth_context(
         clerk_user_id=clerk_user_id,
         defaults=defaults,
     )
+    from app.services.organizations import ensure_member_for_user
+
+    await ensure_member_for_user(session, user)
 
     return AuthContext(
         actor_type="user",
@@ -146,6 +149,9 @@ async def get_auth_context_optional(
         clerk_user_id=clerk_user_id,
         defaults=defaults,
     )
+    from app.services.organizations import ensure_member_for_user
+
+    await ensure_member_for_user(session, user)
 
     return AuthContext(
         actor_type="user",

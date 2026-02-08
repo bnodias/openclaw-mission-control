@@ -10,13 +10,14 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import asc, or_, update
+from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
-from app.api.deps import ActorContext, require_admin_auth, require_admin_or_agent
+from app.api.deps import ActorContext, require_admin_or_agent, require_org_admin
 from app.core.agent_tokens import generate_agent_token, hash_agent_token
-from app.core.auth import AuthContext
+from app.core.auth import AuthContext, get_auth_context
 from app.core.time import utcnow
 from app.db.pagination import paginate
 from app.db.session import async_session_maker, get_session
@@ -26,7 +27,9 @@ from app.models.activity_events import ActivityEvent
 from app.models.agents import Agent
 from app.models.boards import Board
 from app.models.gateways import Gateway
+from app.models.organizations import Organization
 from app.models.tasks import Task
+from app.models.users import User
 from app.schemas.agents import (
     AgentCreate,
     AgentHeartbeat,
@@ -42,6 +45,14 @@ from app.services.agent_provisioning import (
     cleanup_agent,
     provision_agent,
     provision_main_agent,
+)
+from app.services.organizations import (
+    OrganizationContext,
+    get_active_membership,
+    has_board_access,
+    is_org_admin,
+    list_accessible_board_ids,
+    require_board_access,
 )
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -85,7 +96,13 @@ def _workspace_path(agent_name: str, workspace_root: str | None) -> str:
     return f"{root}/workspace-{_slugify(agent_name)}"
 
 
-async def _require_board(session: AsyncSession, board_id: UUID | str | None) -> Board:
+async def _require_board(
+    session: AsyncSession,
+    board_id: UUID | str | None,
+    *,
+    user: object | None = None,
+    write: bool = False,
+) -> Board:
     if not board_id:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -94,6 +111,8 @@ async def _require_board(session: AsyncSession, board_id: UUID | str | None) -> 
     board = await session.get(Board, board_id)
     if board is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board not found")
+    if user is not None:
+        await require_board_access(session, user=user, board=board, write=write)  # type: ignore[arg-type]
     return board
 
 
@@ -107,6 +126,11 @@ async def _require_gateway(
         )
     gateway = await session.get(Gateway, board.gateway_id)
     if gateway is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Board gateway_id is invalid",
+        )
+    if gateway.organization_id != board.organization_id:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Board gateway_id is invalid",
@@ -206,6 +230,40 @@ async def _fetch_agent_events(
     return list(await session.exec(statement))
 
 
+async def _require_user_context(session: AsyncSession, user: User | None) -> OrganizationContext:
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+    member = await get_active_membership(session, user)
+    if member is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    organization = await session.get(Organization, member.organization_id)
+    if organization is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    return OrganizationContext(organization=organization, member=member)
+
+
+async def _require_agent_access(
+    session: AsyncSession,
+    *,
+    agent: Agent,
+    ctx: OrganizationContext,
+    write: bool,
+) -> None:
+    if agent.board_id is None:
+        if not is_org_admin(ctx.member):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+        gateway = await _find_gateway_for_main_session(session, agent.openclaw_session_id)
+        if gateway is None or gateway.organization_id != ctx.organization.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+        return
+
+    board = await session.get(Board, agent.board_id)
+    if board is None or board.organization_id != ctx.organization.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if not await has_board_access(session, member=ctx.member, board=board, write=write):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+
 def _record_heartbeat(session: AsyncSession, agent: Agent) -> None:
     record_activity(
         session,
@@ -245,13 +303,28 @@ async def list_agents(
     board_id: UUID | None = Query(default=None),
     gateway_id: UUID | None = Query(default=None),
     session: AsyncSession = Depends(get_session),
-    auth: AuthContext = Depends(require_admin_auth),
+    ctx: OrganizationContext = Depends(require_org_admin),
 ) -> DefaultLimitOffsetPage[AgentRead]:
     main_session_keys = await _get_gateway_main_session_keys(session)
-    statement = select(Agent)
+    board_ids = await list_accessible_board_ids(session, member=ctx.member, write=False)
+    if board_id is not None and board_id not in set(board_ids):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    if not board_ids:
+        statement = select(Agent).where(col(Agent.id).is_(None))
+    else:
+        base_filter: ColumnElement[bool] = col(Agent.board_id).in_(board_ids)
+        if is_org_admin(ctx.member):
+            gateway_keys = select(Gateway.main_session_key).where(
+                col(Gateway.organization_id) == ctx.organization.id
+            )
+            base_filter = or_(base_filter, col(Agent.openclaw_session_id).in_(gateway_keys))
+        statement = select(Agent).where(base_filter)
     if board_id is not None:
         statement = statement.where(col(Agent.board_id) == board_id)
     if gateway_id is not None:
+        gateway = await session.get(Gateway, gateway_id)
+        if gateway is None or gateway.organization_id != ctx.organization.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
         statement = statement.join(Board, col(Agent.board_id) == col(Board.id)).where(
             col(Board.gateway_id) == gateway_id
         )
@@ -269,10 +342,15 @@ async def stream_agents(
     request: Request,
     board_id: UUID | None = Query(default=None),
     since: str | None = Query(default=None),
-    auth: AuthContext = Depends(require_admin_auth),
+    session: AsyncSession = Depends(get_session),
+    ctx: OrganizationContext = Depends(require_org_admin),
 ) -> EventSourceResponse:
     since_dt = _parse_since(since) or utcnow()
     last_seen = since_dt
+    board_ids = await list_accessible_board_ids(session, member=ctx.member, write=False)
+    allowed_ids = set(board_ids)
+    if board_id is not None and board_id not in allowed_ids:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
     async def event_generator() -> AsyncIterator[dict[str, str]]:
         nonlocal last_seen
@@ -280,7 +358,13 @@ async def stream_agents(
             if await request.is_disconnected():
                 break
             async with async_session_maker() as session:
-                agents = await _fetch_agent_events(session, board_id, last_seen)
+                if board_id is not None:
+                    agents = await _fetch_agent_events(session, board_id, last_seen)
+                elif allowed_ids:
+                    agents = await _fetch_agent_events(session, None, last_seen)
+                    agents = [agent for agent in agents if agent.board_id in allowed_ids]
+                else:
+                    agents = []
                 main_session_keys = (
                     await _get_gateway_main_session_keys(session) if agents else set()
                 )
@@ -301,6 +385,10 @@ async def create_agent(
     session: AsyncSession = Depends(get_session),
     actor: ActorContext = Depends(require_admin_or_agent),
 ) -> AgentRead:
+    if actor.actor_type == "user":
+        ctx = await _require_user_context(session, actor.user)
+        if not is_org_admin(ctx.member):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     if actor.actor_type == "agent":
         if not actor.agent or not actor.agent.is_board_lead:
             raise HTTPException(
@@ -319,7 +407,12 @@ async def create_agent(
             )
         payload = AgentCreate(**{**payload.model_dump(), "board_id": actor.agent.board_id})
 
-    board = await _require_board(session, payload.board_id)
+    board = await _require_board(
+        session,
+        payload.board_id,
+        user=actor.user if actor.actor_type == "user" else None,
+        write=actor.actor_type == "user",
+    )
     gateway, client_config = await _require_gateway(session, board)
     data = payload.model_dump()
     requested_name = (data.get("name") or "").strip()
@@ -436,11 +529,12 @@ async def create_agent(
 async def get_agent(
     agent_id: str,
     session: AsyncSession = Depends(get_session),
-    auth: AuthContext = Depends(require_admin_auth),
+    ctx: OrganizationContext = Depends(require_org_admin),
 ) -> AgentRead:
     agent = await session.get(Agent, agent_id)
     if agent is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    await _require_agent_access(session, agent=agent, ctx=ctx, write=False)
     main_session_keys = await _get_gateway_main_session_keys(session)
     return _to_agent_read(_with_computed_status(agent), main_session_keys)
 
@@ -451,18 +545,28 @@ async def update_agent(
     payload: AgentUpdate,
     force: bool = False,
     session: AsyncSession = Depends(get_session),
-    auth: AuthContext = Depends(require_admin_auth),
+    auth: AuthContext = Depends(get_auth_context),
+    ctx: OrganizationContext = Depends(require_org_admin),
 ) -> AgentRead:
     agent = await session.get(Agent, agent_id)
     if agent is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    await _require_agent_access(session, agent=agent, ctx=ctx, write=True)
     updates = payload.model_dump(exclude_unset=True)
     make_main = updates.pop("is_gateway_main", None)
+    if make_main is True and not is_org_admin(ctx.member):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     if "status" in updates:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="status is controlled by agent heartbeat",
         )
+    if "board_id" in updates and updates["board_id"] is not None:
+        new_board = await _require_board(session, updates["board_id"])
+        if new_board.organization_id != ctx.organization.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+        if not await has_board_access(session, member=ctx.member, board=new_board, write=True):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     if not updates and not force and make_main is None:
         main_session_keys = await _get_gateway_main_session_keys(session)
         return _to_agent_read(_with_computed_status(agent), main_session_keys)
@@ -628,6 +732,11 @@ async def heartbeat_agent(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     if actor.actor_type == "agent" and actor.agent and actor.agent.id != agent.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+    if actor.actor_type == "user":
+        ctx = await _require_user_context(session, actor.user)
+        if not is_org_admin(ctx.member):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+        await _require_agent_access(session, agent=agent, ctx=ctx, write=True)
     if payload.status:
         agent.status = payload.status
     elif agent.status == "provisioning":
@@ -664,7 +773,16 @@ async def heartbeat_or_create_agent(
     if agent is None:
         if actor.actor_type == "agent":
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-        board = await _require_board(session, payload.board_id)
+        if actor.actor_type == "user":
+            ctx = await _require_user_context(session, actor.user)
+            if not is_org_admin(ctx.member):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+        board = await _require_board(
+            session,
+            payload.board_id,
+            user=actor.user,
+            write=True,
+        )
         gateway, client_config = await _require_gateway(session, board)
         agent = Agent(
             name=payload.name,
@@ -724,50 +842,68 @@ async def heartbeat_or_create_agent(
         except Exception as exc:  # pragma: no cover - unexpected provisioning errors
             _record_instruction_failure(session, agent, str(exc), "provision")
             await session.commit()
-    elif actor.actor_type == "agent" and actor.agent and actor.agent.id != agent.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
-    elif agent.agent_token_hash is None and actor.actor_type == "user":
-        raw_token = generate_agent_token()
-        agent.agent_token_hash = hash_agent_token(raw_token)
-        if agent.heartbeat_config is None:
-            agent.heartbeat_config = DEFAULT_HEARTBEAT_CONFIG.copy()
-        agent.provision_requested_at = utcnow()
-        agent.provision_action = "provision"
-        session.add(agent)
-        await session.commit()
-        await session.refresh(agent)
-        try:
-            board = await _require_board(session, str(agent.board_id) if agent.board_id else None)
-            gateway, client_config = await _require_gateway(session, board)
-            await provision_agent(agent, board, gateway, raw_token, actor.user, action="provision")
-            await _send_wakeup_message(agent, client_config, verb="provisioned")
-            agent.provision_confirm_token_hash = None
-            agent.provision_requested_at = None
-            agent.provision_action = None
-            agent.updated_at = utcnow()
-            session.add(agent)
-            await session.commit()
-            record_activity(
-                session,
-                event_type="agent.provision",
-                message=f"Provisioned directly for {agent.name}.",
-                agent_id=agent.id,
-            )
-            record_activity(
-                session,
-                event_type="agent.wakeup.sent",
-                message=f"Wakeup message sent to {agent.name}.",
-                agent_id=agent.id,
-            )
-            await session.commit()
-        except OpenClawGatewayError as exc:
-            _record_instruction_failure(session, agent, str(exc), "provision")
-            await session.commit()
-        except Exception as exc:  # pragma: no cover - unexpected provisioning errors
-            _record_instruction_failure(session, agent, str(exc), "provision")
-            await session.commit()
-    elif not agent.openclaw_session_id:
-        board = await _require_board(session, str(agent.board_id) if agent.board_id else None)
+    else:
+        if actor.actor_type == "user":
+            ctx = await _require_user_context(session, actor.user)
+            await _require_agent_access(session, agent=agent, ctx=ctx, write=True)
+
+            if agent.agent_token_hash is None:
+                raw_token = generate_agent_token()
+                agent.agent_token_hash = hash_agent_token(raw_token)
+                if agent.heartbeat_config is None:
+                    agent.heartbeat_config = DEFAULT_HEARTBEAT_CONFIG.copy()
+                agent.provision_requested_at = utcnow()
+                agent.provision_action = "provision"
+                session.add(agent)
+                await session.commit()
+                await session.refresh(agent)
+                try:
+                    board = await _require_board(
+                        session,
+                        str(agent.board_id) if agent.board_id else None,
+                        user=actor.user,
+                        write=True,
+                    )
+                    gateway, client_config = await _require_gateway(session, board)
+                    await provision_agent(
+                        agent, board, gateway, raw_token, actor.user, action="provision"
+                    )
+                    await _send_wakeup_message(agent, client_config, verb="provisioned")
+                    agent.provision_confirm_token_hash = None
+                    agent.provision_requested_at = None
+                    agent.provision_action = None
+                    agent.updated_at = utcnow()
+                    session.add(agent)
+                    await session.commit()
+                    record_activity(
+                        session,
+                        event_type="agent.provision",
+                        message=f"Provisioned directly for {agent.name}.",
+                        agent_id=agent.id,
+                    )
+                    record_activity(
+                        session,
+                        event_type="agent.wakeup.sent",
+                        message=f"Wakeup message sent to {agent.name}.",
+                        agent_id=agent.id,
+                    )
+                    await session.commit()
+                except OpenClawGatewayError as exc:
+                    _record_instruction_failure(session, agent, str(exc), "provision")
+                    await session.commit()
+                except Exception as exc:  # pragma: no cover - unexpected provisioning errors
+                    _record_instruction_failure(session, agent, str(exc), "provision")
+                    await session.commit()
+        elif actor.actor_type == "agent" and actor.agent and actor.agent.id != agent.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
+
+    if not agent.openclaw_session_id:
+        board = await _require_board(
+            session,
+            str(agent.board_id) if agent.board_id else None,
+            user=actor.user if actor.actor_type == "user" else None,
+            write=actor.actor_type == "user",
+        )
         gateway, client_config = await _require_gateway(session, board)
         session_key, session_error = await _ensure_gateway_session(agent.name, client_config)
         agent.openclaw_session_id = session_key
@@ -804,11 +940,12 @@ async def heartbeat_or_create_agent(
 async def delete_agent(
     agent_id: str,
     session: AsyncSession = Depends(get_session),
-    auth: AuthContext = Depends(require_admin_auth),
+    ctx: OrganizationContext = Depends(require_org_admin),
 ) -> OkResponse:
     agent = await session.get(Agent, agent_id)
     if agent is None:
         return OkResponse()
+    await _require_agent_access(session, agent=agent, ctx=ctx, write=True)
 
     board = await _require_board(session, str(agent.board_id) if agent.board_id else None)
     gateway, client_config = await _require_gateway(session, board)

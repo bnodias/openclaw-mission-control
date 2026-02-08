@@ -10,6 +10,7 @@ export interface BoardGroupRead {
   slug: string;
   description?: string | null;
   id: string;
+  organization_id: string;
   created_at: string;
   updated_at: string;
 }

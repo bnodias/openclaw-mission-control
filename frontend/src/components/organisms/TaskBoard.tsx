@@ -34,6 +34,7 @@ type TaskBoardProps = {
   tasks: Task[];
   onTaskSelect?: (task: Task) => void;
   onTaskMove?: (taskId: string, status: TaskStatus) => void | Promise<void>;
+  readOnly?: boolean;
 };
 
 type ReviewBucket = "all" | "approval_needed" | "waiting_lead" | "blocked";
@@ -99,6 +100,7 @@ export const TaskBoard = memo(function TaskBoard({
   tasks,
   onTaskSelect,
   onTaskMove,
+  readOnly = false,
 }: TaskBoardProps) {
   const boardRef = useRef<HTMLDivElement | null>(null);
   const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -268,6 +270,10 @@ export const TaskBoard = memo(function TaskBoard({
 
   const handleDragStart =
     (task: Task) => (event: React.DragEvent<HTMLDivElement>) => {
+      if (readOnly) {
+        event.preventDefault();
+        return;
+      }
       if (task.is_blocked) {
         event.preventDefault();
         return;
@@ -287,6 +293,7 @@ export const TaskBoard = memo(function TaskBoard({
 
   const handleDrop =
     (status: TaskStatus) => (event: React.DragEvent<HTMLDivElement>) => {
+      if (readOnly) return;
       event.preventDefault();
       setActiveColumn(null);
       const raw = event.dataTransfer.getData("text/plain");
@@ -303,6 +310,7 @@ export const TaskBoard = memo(function TaskBoard({
 
   const handleDragOver =
     (status: TaskStatus) => (event: React.DragEvent<HTMLDivElement>) => {
+      if (readOnly) return;
       event.preventDefault();
       if (activeColumn !== status) {
         setActiveColumn(status);
@@ -310,6 +318,7 @@ export const TaskBoard = memo(function TaskBoard({
     };
 
   const handleDragLeave = (status: TaskStatus) => () => {
+    if (readOnly) return;
     if (activeColumn === status) {
       setActiveColumn(null);
     }
@@ -368,11 +377,13 @@ export const TaskBoard = memo(function TaskBoard({
             key={column.title}
             className={cn(
               "kanban-column min-h-[calc(100vh-260px)]",
-              activeColumn === column.status && "ring-2 ring-slate-200",
+              activeColumn === column.status &&
+                !readOnly &&
+                "ring-2 ring-slate-200",
             )}
-            onDrop={handleDrop(column.status)}
-            onDragOver={handleDragOver(column.status)}
-            onDragLeave={handleDragLeave(column.status)}
+            onDrop={readOnly ? undefined : handleDrop(column.status)}
+            onDragOver={readOnly ? undefined : handleDragOver(column.status)}
+            onDragLeave={readOnly ? undefined : handleDragLeave(column.status)}
           >
             <div className="column-header sticky top-0 z-10 rounded-t-xl border border-b-0 border-slate-200 bg-white/80 px-4 py-3 backdrop-blur">
               <div className="flex items-center justify-between">
@@ -445,10 +456,10 @@ export const TaskBoard = memo(function TaskBoard({
                       isBlocked={task.is_blocked}
                       blockedByCount={task.blocked_by_task_ids?.length ?? 0}
                       onClick={() => onTaskSelect?.(task)}
-                      draggable={!task.is_blocked}
+                      draggable={!readOnly && !task.is_blocked}
                       isDragging={draggingId === task.id}
-                      onDragStart={handleDragStart(task)}
-                      onDragEnd={handleDragEnd}
+                      onDragStart={readOnly ? undefined : handleDragStart(task)}
+                      onDragEnd={readOnly ? undefined : handleDragEnd}
                     />
                   </div>
                 ))}

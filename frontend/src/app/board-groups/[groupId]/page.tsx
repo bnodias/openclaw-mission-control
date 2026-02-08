@@ -27,9 +27,14 @@ import {
   streamBoardGroupMemoryApiV1BoardGroupsGroupIdMemoryStreamGet,
   useListBoardGroupMemoryApiV1BoardGroupsGroupIdMemoryGet,
 } from "@/api/generated/board-group-memory/board-group-memory";
+import {
+  type getMyMembershipApiV1OrganizationsMeMemberGetResponse,
+  useGetMyMembershipApiV1OrganizationsMeMemberGet,
+} from "@/api/generated/organizations/organizations";
 import type {
   BoardGroupHeartbeatApplyResult,
   BoardGroupMemoryRead,
+  OrganizationMemberRead,
 } from "@/api/generated/model";
 import type { BoardGroupBoardSnapshot } from "@/api/generated/model";
 import { Markdown } from "@/components/atoms/Markdown";
@@ -95,6 +100,18 @@ const priorityTone = (value?: string | null) => {
 
 const safeCount = (snapshot: BoardGroupBoardSnapshot, key: string) =>
   snapshot.task_counts?.[key] ?? 0;
+
+const canWriteGroupBoards = (
+  member: OrganizationMemberRead | null,
+  boardIds: Set<string>,
+) => {
+  if (!member) return false;
+  if (member.all_boards_write) return true;
+  if (!member.board_access || boardIds.size === 0) return false;
+  return member.board_access.some(
+    (access) => access.can_write && boardIds.has(access.board_id),
+  );
+};
 
 function GroupChatMessageCard({ message }: { message: BoardGroupMemoryRead }) {
   return (
@@ -215,6 +232,34 @@ export default function BoardGroupDetailPage() {
     snapshotQuery.data?.status === 200 ? snapshotQuery.data.data : null;
   const group = snapshot?.group ?? null;
   const boards = useMemo(() => snapshot?.boards ?? [], [snapshot?.boards]);
+  const boardIdSet = useMemo(() => {
+    const ids = new Set<string>();
+    boards.forEach((item) => {
+      if (item.board?.id) {
+        ids.add(item.board.id);
+      }
+    });
+    return ids;
+  }, [boards]);
+
+  const membershipQuery = useGetMyMembershipApiV1OrganizationsMeMemberGet<
+    getMyMembershipApiV1OrganizationsMeMemberGetResponse,
+    ApiError
+  >({
+    query: {
+      enabled: Boolean(isSignedIn),
+      refetchOnMount: "always",
+    },
+  });
+
+  const member =
+    membershipQuery.data?.status === 200 ? membershipQuery.data.data : null;
+  const isAdmin = member?.role === "admin" || member?.role === "owner";
+  const canWriteGroup = useMemo(
+    () => canWriteGroupBoards(member, boardIdSet),
+    [boardIdSet, member],
+  );
+  const canManageHeartbeat = Boolean(isAdmin && canWriteGroup);
 
   const chatHistoryQuery =
     useListBoardGroupMemoryApiV1BoardGroupsGroupIdMemoryGet<
@@ -554,6 +599,10 @@ export default function BoardGroupDetailPage() {
         setChatError("Sign in to send messages.");
         return false;
       }
+      if (!canWriteGroup) {
+        setChatError("Read-only access. You cannot post group messages.");
+        return false;
+      }
       const trimmed = content.trim();
       if (!trimmed) return false;
 
@@ -583,13 +632,17 @@ export default function BoardGroupDetailPage() {
         setIsChatSending(false);
       }
     },
-    [chatBroadcast, groupId, isSignedIn, mergeChatMessages],
+    [canWriteGroup, chatBroadcast, groupId, isSignedIn, mergeChatMessages],
   );
 
   const sendGroupNote = useCallback(
     async (content: string): Promise<boolean> => {
       if (!isSignedIn || !groupId) {
         setNoteSendError("Sign in to post.");
+        return false;
+      }
+      if (!canWriteGroup) {
+        setNoteSendError("Read-only access. You cannot post notes.");
         return false;
       }
       const trimmed = content.trim();
@@ -621,12 +674,16 @@ export default function BoardGroupDetailPage() {
         setIsNoteSending(false);
       }
     },
-    [groupId, isSignedIn, mergeNotesMessages, notesBroadcast],
+    [canWriteGroup, groupId, isSignedIn, mergeNotesMessages, notesBroadcast],
   );
 
   const applyHeartbeat = useCallback(async () => {
     if (!isSignedIn || !groupId) {
       setHeartbeatApplyError("Sign in to apply.");
+      return;
+    }
+    if (!canManageHeartbeat) {
+      setHeartbeatApplyError("Read-only access. You cannot change agent pace.");
       return;
     }
     const trimmed = heartbeatEvery.trim();
@@ -653,7 +710,13 @@ export default function BoardGroupDetailPage() {
     } finally {
       setIsHeartbeatApplying(false);
     }
-  }, [groupId, heartbeatEvery, includeBoardLeads, isSignedIn]);
+  }, [
+    canManageHeartbeat,
+    groupId,
+    heartbeatEvery,
+    includeBoardLeads,
+    isSignedIn,
+  ]);
 
   return (
     <DashboardShell>
@@ -793,7 +856,10 @@ export default function BoardGroupDetailPage() {
                             heartbeatEvery === value
                               ? "bg-slate-900 text-white"
                               : "text-slate-600 hover:bg-slate-100 hover:text-slate-900",
+                            !canManageHeartbeat &&
+                              "opacity-50 cursor-not-allowed",
                           )}
+                          disabled={!canManageHeartbeat}
                           onClick={() => {
                             setHeartbeatAmount(String(preset.amount));
                             setHeartbeatUnit(preset.unit);
@@ -812,19 +878,25 @@ export default function BoardGroupDetailPage() {
                       heartbeatEvery
                         ? "border-slate-200"
                         : "border-rose-300 focus:border-rose-400 focus:ring-2 focus:ring-rose-100",
+                      !canManageHeartbeat && "opacity-60 cursor-not-allowed",
                     )}
                     placeholder="10"
                     inputMode="numeric"
                     type="number"
                     min={1}
                     step={1}
+                    disabled={!canManageHeartbeat}
                   />
                   <select
                     value={heartbeatUnit}
                     onChange={(event) =>
                       setHeartbeatUnit(event.target.value as HeartbeatUnit)
                     }
-                    className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900 shadow-sm"
+                    className={cn(
+                      "h-8 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900 shadow-sm",
+                      !canManageHeartbeat && "opacity-60 cursor-not-allowed",
+                    )}
+                    disabled={!canManageHeartbeat}
                   >
                     <option value="s">sec</option>
                     <option value="m">min</option>
@@ -839,6 +911,7 @@ export default function BoardGroupDetailPage() {
                       onChange={(event) =>
                         setIncludeBoardLeads(event.target.checked)
                       }
+                      disabled={!canManageHeartbeat}
                     />
                     Include leads
                   </label>
@@ -846,11 +919,26 @@ export default function BoardGroupDetailPage() {
                     size="sm"
                     variant="outline"
                     onClick={() => void applyHeartbeat()}
-                    disabled={isHeartbeatApplying || !heartbeatEvery}
+                    disabled={
+                      isHeartbeatApplying ||
+                      !heartbeatEvery ||
+                      !canManageHeartbeat
+                    }
+                    title={
+                      canManageHeartbeat
+                        ? "Apply heartbeat"
+                        : "Read-only access"
+                    }
                   >
                     {isHeartbeatApplying ? "Applying…" : "Apply"}
                   </Button>
                 </div>
+                {!canManageHeartbeat ? (
+                  <p className="text-xs text-slate-500">
+                    Read-only access. You cannot change agent pace for this
+                    group.
+                  </p>
+                ) : null}
               </div>
             </div>
           </div>
@@ -1035,6 +1123,7 @@ export default function BoardGroupDetailPage() {
                   className="h-4 w-4 rounded border-slate-300 text-blue-600"
                   checked={chatBroadcast}
                   onChange={(event) => setChatBroadcast(event.target.checked)}
+                  disabled={!canWriteGroup}
                 />
                 Broadcast
               </label>
@@ -1072,9 +1161,14 @@ export default function BoardGroupDetailPage() {
             </div>
 
             <BoardChatComposer
-              placeholder="Message the whole group. Tag @lead, @name, or @all."
+              placeholder={
+                canWriteGroup
+                  ? "Message the whole group. Tag @lead, @name, or @all."
+                  : "Read-only access. Group chat is disabled."
+              }
               isSending={isChatSending}
               onSend={sendGroupChat}
+              disabled={!canWriteGroup}
             />
           </div>
         </div>
@@ -1115,6 +1209,7 @@ export default function BoardGroupDetailPage() {
                   className="h-4 w-4 rounded border-slate-300 text-blue-600"
                   checked={notesBroadcast}
                   onChange={(event) => setNotesBroadcast(event.target.checked)}
+                  disabled={!canWriteGroup}
                 />
                 Broadcast
               </label>
@@ -1152,9 +1247,14 @@ export default function BoardGroupDetailPage() {
             </div>
 
             <BoardChatComposer
-              placeholder="Post a shared note for all linked boards. Tag @lead, @name, or @all."
+              placeholder={
+                canWriteGroup
+                  ? "Post a shared note for all linked boards. Tag @lead, @name, or @all."
+                  : "Read-only access. Notes are disabled."
+              }
               isSending={isNoteSending}
               onSend={sendGroupNote}
+              disabled={!canWriteGroup}
             />
           </div>
         </div>

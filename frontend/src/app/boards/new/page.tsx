@@ -18,6 +18,10 @@ import {
   type listGatewaysApiV1GatewaysGetResponse,
   useListGatewaysApiV1GatewaysGet,
 } from "@/api/generated/gateways/gateways";
+import {
+  type getMyMembershipApiV1OrganizationsMeMemberGetResponse,
+  useGetMyMembershipApiV1OrganizationsMeMemberGet,
+} from "@/api/generated/organizations/organizations";
 import type { BoardGroupRead } from "@/api/generated/model";
 import { DashboardSidebar } from "@/components/organisms/DashboardSidebar";
 import { DashboardShell } from "@/components/templates/DashboardShell";
@@ -36,6 +40,20 @@ export default function NewBoardPage() {
   const router = useRouter();
   const { isSignedIn } = useAuth();
 
+  const membershipQuery = useGetMyMembershipApiV1OrganizationsMeMemberGet<
+    getMyMembershipApiV1OrganizationsMeMemberGetResponse,
+    ApiError
+  >({
+    query: {
+      enabled: Boolean(isSignedIn),
+      refetchOnMount: "always",
+      retry: false,
+    },
+  });
+  const member =
+    membershipQuery.data?.status === 200 ? membershipQuery.data.data : null;
+  const isAdmin = member ? ["owner", "admin"].includes(member.role) : false;
+
   const [name, setName] = useState("");
   const [gatewayId, setGatewayId] = useState<string>("");
   const [boardGroupId, setBoardGroupId] = useState<string>("none");
@@ -47,7 +65,7 @@ export default function NewBoardPage() {
     ApiError
   >(undefined, {
     query: {
-      enabled: Boolean(isSignedIn),
+      enabled: Boolean(isSignedIn && isAdmin),
       refetchOnMount: "always",
       retry: false,
     },
@@ -58,7 +76,7 @@ export default function NewBoardPage() {
     ApiError
   >(undefined, {
     query: {
-      enabled: Boolean(isSignedIn),
+      enabled: Boolean(isSignedIn && isAdmin),
       refetchOnMount: "always",
       retry: false,
     },
@@ -166,100 +184,106 @@ export default function NewBoardPage() {
           </div>
 
           <div className="p-8">
-            <form
-              onSubmit={handleSubmit}
-              className="space-y-6 rounded-xl border border-slate-200 bg-white p-6 shadow-sm"
-            >
-              <div className="space-y-4">
-                <div className="grid gap-6 md:grid-cols-2">
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-900">
-                      Board name <span className="text-red-500">*</span>
-                    </label>
-                    <Input
-                      value={name}
-                      onChange={(event) => setName(event.target.value)}
-                      placeholder="e.g. Release operations"
-                      disabled={isLoading}
-                    />
+            {!isAdmin ? (
+              <div className="rounded-xl border border-slate-200 bg-white px-6 py-5 text-sm text-slate-600 shadow-sm">
+                Only organization owners and admins can create boards.
+              </div>
+            ) : (
+              <form
+                onSubmit={handleSubmit}
+                className="space-y-6 rounded-xl border border-slate-200 bg-white p-6 shadow-sm"
+              >
+                <div className="space-y-4">
+                  <div className="grid gap-6 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-slate-900">
+                        Board name <span className="text-red-500">*</span>
+                      </label>
+                      <Input
+                        value={name}
+                        onChange={(event) => setName(event.target.value)}
+                        placeholder="e.g. Release operations"
+                        disabled={isLoading}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-slate-900">
+                        Gateway <span className="text-red-500">*</span>
+                      </label>
+                      <SearchableSelect
+                        ariaLabel="Select gateway"
+                        value={displayGatewayId}
+                        onValueChange={setGatewayId}
+                        options={gatewayOptions}
+                        placeholder="Select gateway"
+                        searchPlaceholder="Search gateways..."
+                        emptyMessage="No gateways found."
+                        triggerClassName="w-full h-11 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-900 shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+                        contentClassName="rounded-xl border border-slate-200 shadow-lg"
+                        itemClassName="px-4 py-3 text-sm text-slate-700 data-[selected=true]:bg-slate-50 data-[selected=true]:text-slate-900"
+                      />
+                    </div>
                   </div>
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-900">
-                      Gateway <span className="text-red-500">*</span>
-                    </label>
-                    <SearchableSelect
-                      ariaLabel="Select gateway"
-                      value={displayGatewayId}
-                      onValueChange={setGatewayId}
-                      options={gatewayOptions}
-                      placeholder="Select gateway"
-                      searchPlaceholder="Search gateways..."
-                      emptyMessage="No gateways found."
-                      triggerClassName="w-full h-11 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-900 shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
-                      contentClassName="rounded-xl border border-slate-200 shadow-lg"
-                      itemClassName="px-4 py-3 text-sm text-slate-700 data-[selected=true]:bg-slate-50 data-[selected=true]:text-slate-900"
-                    />
+
+                  <div className="grid gap-6 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-slate-900">
+                        Board group
+                      </label>
+                      <SearchableSelect
+                        ariaLabel="Select board group"
+                        value={boardGroupId}
+                        onValueChange={setBoardGroupId}
+                        options={groupOptions}
+                        placeholder="No group"
+                        searchPlaceholder="Search groups..."
+                        emptyMessage="No groups found."
+                        triggerClassName="w-full h-11 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-900 shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+                        contentClassName="rounded-xl border border-slate-200 shadow-lg"
+                        itemClassName="px-4 py-3 text-sm text-slate-700 data-[selected=true]:bg-slate-50 data-[selected=true]:text-slate-900"
+                        disabled={isLoading}
+                      />
+                      <p className="text-xs text-slate-500">
+                        Optional. Groups increase cross-board visibility.
+                      </p>
+                    </div>
                   </div>
                 </div>
 
-                <div className="grid gap-6 md:grid-cols-2">
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-900">
-                      Board group
-                    </label>
-                    <SearchableSelect
-                      ariaLabel="Select board group"
-                      value={boardGroupId}
-                      onValueChange={setBoardGroupId}
-                      options={groupOptions}
-                      placeholder="No group"
-                      searchPlaceholder="Search groups..."
-                      emptyMessage="No groups found."
-                      triggerClassName="w-full h-11 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-900 shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
-                      contentClassName="rounded-xl border border-slate-200 shadow-lg"
-                      itemClassName="px-4 py-3 text-sm text-slate-700 data-[selected=true]:bg-slate-50 data-[selected=true]:text-slate-900"
-                      disabled={isLoading}
-                    />
-                    <p className="text-xs text-slate-500">
-                      Optional. Groups increase cross-board visibility.
+                {gateways.length === 0 ? (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                    <p>
+                      No gateways available. Create one in{" "}
+                      <Link
+                        href="/gateways"
+                        className="font-medium text-blue-600 hover:text-blue-700"
+                      >
+                        Gateways
+                      </Link>{" "}
+                      to continue.
                     </p>
                   </div>
+                ) : null}
+
+                {errorMessage ? (
+                  <p className="text-sm text-red-500">{errorMessage}</p>
+                ) : null}
+
+                <div className="flex justify-end gap-3">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={() => router.push("/boards")}
+                    disabled={isLoading}
+                  >
+                    Cancel
+                  </Button>
+                  <Button type="submit" disabled={isLoading || !isFormReady}>
+                    {isLoading ? "Creating…" : "Create board"}
+                  </Button>
                 </div>
-              </div>
-
-              {gateways.length === 0 ? (
-                <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                  <p>
-                    No gateways available. Create one in{" "}
-                    <Link
-                      href="/gateways"
-                      className="font-medium text-blue-600 hover:text-blue-700"
-                    >
-                      Gateways
-                    </Link>{" "}
-                    to continue.
-                  </p>
-                </div>
-              ) : null}
-
-              {errorMessage ? (
-                <p className="text-sm text-red-500">{errorMessage}</p>
-              ) : null}
-
-              <div className="flex justify-end gap-3">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={() => router.push("/boards")}
-                  disabled={isLoading}
-                >
-                  Cancel
-                </Button>
-                <Button type="submit" disabled={isLoading || !isFormReady}>
-                  {isLoading ? "Creating…" : "Create board"}
-                </Button>
-              </div>
-            </form>
+              </form>
+            )}
           </div>
         </main>
       </SignedIn>

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -181,9 +182,22 @@ def _ensure_workspace_file(
 ) -> None:
     if not workspace_path or not name:
         return
-    # `gateway.workspace_root` is sometimes configured as `~/.openclaw`.
-    # Expand user here to avoid creating a literal `./~` directory under the backend cwd.
-    root = Path(workspace_path).expanduser()
+    # Only write to a dedicated, explicitly-configured local directory.
+    # Using `gateway.workspace_root` directly here is unsafe (and CodeQL correctly flags it)
+    # because it is a DB-backed config value.
+    base_root = (settings.local_agent_workspace_root or "").strip()
+    if not base_root:
+        return
+    base = Path(base_root).expanduser()
+
+    # Derive a stable, safe directory name from the (potentially untrusted) workspace path.
+    # This prevents path traversal and avoids writing to arbitrary locations.
+    digest = hashlib.sha256(workspace_path.encode("utf-8")).hexdigest()[:16]
+    root = base / f"gateway-workspace-{digest}"
+
+    # Ensure `name` is a plain filename (no path separators).
+    if Path(name).name != name:
+        return
     path = root / name
     if not overwrite and path.exists():
         return

@@ -12,6 +12,18 @@ from app.schemas.board_onboarding import (
 from app.schemas.boards import BoardCreate, BoardRead, BoardUpdate
 from app.schemas.gateways import GatewayCreate, GatewayRead, GatewayUpdate
 from app.schemas.metrics import DashboardMetrics
+from app.schemas.organizations import (
+    OrganizationActiveUpdate,
+    OrganizationCreate,
+    OrganizationInviteAccept,
+    OrganizationInviteCreate,
+    OrganizationInviteRead,
+    OrganizationListItem,
+    OrganizationMemberAccessUpdate,
+    OrganizationMemberRead,
+    OrganizationMemberUpdate,
+    OrganizationRead,
+)
 from app.schemas.souls_directory import (
     SoulsDirectoryMarkdownResponse,
     SoulsDirectorySearchResponse,
@@ -43,6 +55,16 @@ __all__ = [
     "GatewayRead",
     "GatewayUpdate",
     "DashboardMetrics",
+    "OrganizationActiveUpdate",
+    "OrganizationCreate",
+    "OrganizationInviteAccept",
+    "OrganizationInviteCreate",
+    "OrganizationInviteRead",
+    "OrganizationListItem",
+    "OrganizationMemberAccessUpdate",
+    "OrganizationMemberRead",
+    "OrganizationMemberUpdate",
+    "OrganizationRead",
     "SoulsDirectoryMarkdownResponse",
     "SoulsDirectorySearchResponse",
     "SoulsDirectorySoulRef",

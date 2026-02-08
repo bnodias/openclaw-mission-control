@@ -18,3 +18,6 @@ class User(SQLModel, table=True):
     notes: str | None = None
     context: str | None = None
     is_super_admin: bool = Field(default=False)
+    active_organization_id: UUID | None = Field(
+        default=None, foreign_key="organizations.id", index=True
+    )

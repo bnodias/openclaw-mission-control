@@ -11,6 +11,7 @@ export interface GatewayRead {
   main_session_key: string;
   workspace_root: string;
   id: string;
+  organization_id: string;
   token?: string | null;
   created_at: string;
   updated_at: string;
