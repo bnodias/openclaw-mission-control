@@ -275,7 +275,7 @@ export function useGetOnboardingApiV1BoardsBoardIdOnboardingGet<
 }
 
 /**
- * Start onboarding and send instructions to the gateway main agent.
+ * Start onboarding and send instructions to the gateway agent.
  * @summary Start Onboarding
  */
 export type startOnboardingApiV1BoardsBoardIdOnboardingStartPostResponse200 = {
@@ -417,7 +417,7 @@ export const useStartOnboardingApiV1BoardsBoardIdOnboardingStartPost = <
   );
 };
 /**
- * Send a user onboarding answer to the gateway main agent.
+ * Send a user onboarding answer to the gateway agent.
  * @summary Answer Onboarding
  */
 export type answerOnboardingApiV1BoardsBoardIdOnboardingAnswerPostResponse200 =
@@ -567,7 +567,7 @@ export const useAnswerOnboardingApiV1BoardsBoardIdOnboardingAnswerPost = <
   );
 };
 /**
- * Store onboarding updates submitted by the gateway main agent.
+ * Store onboarding updates submitted by the gateway agent.
  * @summary Agent Onboarding Update
  */
 export type agentOnboardingUpdateApiV1BoardsBoardIdOnboardingAgentPostResponse200 =

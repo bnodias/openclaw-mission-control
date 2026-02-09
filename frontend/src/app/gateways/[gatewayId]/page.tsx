@@ -67,7 +67,6 @@ export default function GatewayDetailPage() {
     ? {
         gateway_url: gateway.url,
         gateway_token: gateway.token ?? undefined,
-        gateway_main_session_key: gateway.main_session_key ?? undefined,
       }
     : {};
 

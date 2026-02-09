@@ -89,24 +89,24 @@ export default function SettingsPage() {
 
   const deleteAccountMutation = useDeleteMeApiV1UsersMeDelete<ApiError>({
     mutation: {
-    onSuccess: async () => {
-      setDeleteError(null);
-      if (typeof window !== "undefined") {
-        const clerk = (window as Window & { Clerk?: ClerkGlobal }).Clerk;
-        if (clerk?.signOut) {
-          try {
-            await clerk.signOut({ redirectUrl: "/sign-in" });
-            return;
-          } catch {
-            // Fall through to local redirect.
+      onSuccess: async () => {
+        setDeleteError(null);
+        if (typeof window !== "undefined") {
+          const clerk = (window as Window & { Clerk?: ClerkGlobal }).Clerk;
+          if (clerk?.signOut) {
+            try {
+              await clerk.signOut({ redirectUrl: "/sign-in" });
+              return;
+            } catch {
+              // Fall through to local redirect.
+            }
           }
         }
-      }
-      router.replace("/sign-in");
-    },
-    onError: (error) => {
-      setDeleteError(error.message || "Unable to delete account.");
-    },
+        router.replace("/sign-in");
+      },
+      onError: (error) => {
+        setDeleteError(error.message || "Unable to delete account.");
+      },
     },
   });
 

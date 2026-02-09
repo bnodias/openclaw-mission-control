@@ -11,7 +11,6 @@
 export interface GatewayCreate {
   name: string;
   url: string;
-  main_session_key: string;
   workspace_root: string;
   token?: string | null;
 }

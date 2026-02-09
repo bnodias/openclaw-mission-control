@@ -3498,7 +3498,7 @@ export const useUpdateAgentSoulApiV1AgentBoardsBoardIdAgentsAgentIdSoulPut = <
   );
 };
 /**
- * Route a lead's ask-user request through the gateway main agent.
+ * Route a lead's ask-user request through the dedicated gateway agent.
  * @summary Ask User Via Gateway Main
  */
 export type askUserViaGatewayMainApiV1AgentBoardsBoardIdGatewayMainAskUserPostResponse200 =

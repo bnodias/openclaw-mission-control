@@ -12,6 +12,5 @@ export interface GatewayUpdate {
   name?: string | null;
   url?: string | null;
   token?: string | null;
-  main_session_key?: string | null;
   workspace_root?: string | null;
 }

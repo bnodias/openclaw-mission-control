@@ -24,13 +24,13 @@ import type {
   GatewayCommandsResponse,
   GatewayCreate,
   GatewayRead,
-  GatewayResolveQuery,
   GatewaySessionHistoryResponse,
   GatewaySessionMessageRequest,
   GatewaySessionResponse,
   GatewaySessionsResponse,
   GatewayTemplatesSyncResult,
   GatewayUpdate,
+  GatewaysStatusApiV1GatewaysStatusGetParams,
   GatewaysStatusResponse,
   GetGatewaySessionApiV1GatewaysSessionsSessionIdGetParams,
   GetSessionHistoryApiV1GatewaysSessionsSessionIdHistoryGetParams,
@@ -74,36 +74,48 @@ export type gatewaysStatusApiV1GatewaysStatusGetResponse =
   | gatewaysStatusApiV1GatewaysStatusGetResponseSuccess
   | gatewaysStatusApiV1GatewaysStatusGetResponseError;
 
-export const getGatewaysStatusApiV1GatewaysStatusGetUrl = () => {
-  return `/api/v1/gateways/status`;
+export const getGatewaysStatusApiV1GatewaysStatusGetUrl = (
+  params?: GatewaysStatusApiV1GatewaysStatusGetParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/v1/gateways/status?${stringifiedParams}`
+    : `/api/v1/gateways/status`;
 };
 
 export const gatewaysStatusApiV1GatewaysStatusGet = async (
-  gatewayResolveQuery: GatewayResolveQuery,
+  params?: GatewaysStatusApiV1GatewaysStatusGetParams,
   options?: RequestInit,
 ): Promise<gatewaysStatusApiV1GatewaysStatusGetResponse> => {
   return customFetch<gatewaysStatusApiV1GatewaysStatusGetResponse>(
-    getGatewaysStatusApiV1GatewaysStatusGetUrl(),
+    getGatewaysStatusApiV1GatewaysStatusGetUrl(params),
     {
       ...options,
       method: "GET",
-      headers: { "Content-Type": "application/json", ...options?.headers },
-      body: JSON.stringify(gatewayResolveQuery),
     },
   );
 };
 
 export const getGatewaysStatusApiV1GatewaysStatusGetQueryKey = (
-  gatewayResolveQuery?: GatewayResolveQuery,
+  params?: GatewaysStatusApiV1GatewaysStatusGetParams,
 ) => {
-  return [`/api/v1/gateways/status`, gatewayResolveQuery] as const;
+  return [`/api/v1/gateways/status`, ...(params ? [params] : [])] as const;
 };
 
 export const getGatewaysStatusApiV1GatewaysStatusGetQueryOptions = <
   TData = Awaited<ReturnType<typeof gatewaysStatusApiV1GatewaysStatusGet>>,
   TError = HTTPValidationError,
 >(
-  gatewayResolveQuery: GatewayResolveQuery,
+  params?: GatewaysStatusApiV1GatewaysStatusGetParams,
   options?: {
     query?: Partial<
       UseQueryOptions<
@@ -119,15 +131,12 @@ export const getGatewaysStatusApiV1GatewaysStatusGetQueryOptions = <
 
   const queryKey =
     queryOptions?.queryKey ??
-    getGatewaysStatusApiV1GatewaysStatusGetQueryKey(gatewayResolveQuery);
+    getGatewaysStatusApiV1GatewaysStatusGetQueryKey(params);
 
   const queryFn: QueryFunction<
     Awaited<ReturnType<typeof gatewaysStatusApiV1GatewaysStatusGet>>
   > = ({ signal }) =>
-    gatewaysStatusApiV1GatewaysStatusGet(gatewayResolveQuery, {
-      signal,
-      ...requestOptions,
-    });
+    gatewaysStatusApiV1GatewaysStatusGet(params, { signal, ...requestOptions });
 
   return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
     Awaited<ReturnType<typeof gatewaysStatusApiV1GatewaysStatusGet>>,
@@ -146,7 +155,7 @@ export function useGatewaysStatusApiV1GatewaysStatusGet<
   TData = Awaited<ReturnType<typeof gatewaysStatusApiV1GatewaysStatusGet>>,
   TError = HTTPValidationError,
 >(
-  gatewayResolveQuery: GatewayResolveQuery,
+  params: undefined | GatewaysStatusApiV1GatewaysStatusGetParams,
   options: {
     query: Partial<
       UseQueryOptions<
@@ -173,7 +182,7 @@ export function useGatewaysStatusApiV1GatewaysStatusGet<
   TData = Awaited<ReturnType<typeof gatewaysStatusApiV1GatewaysStatusGet>>,
   TError = HTTPValidationError,
 >(
-  gatewayResolveQuery: GatewayResolveQuery,
+  params?: GatewaysStatusApiV1GatewaysStatusGetParams,
   options?: {
     query?: Partial<
       UseQueryOptions<
@@ -200,7 +209,7 @@ export function useGatewaysStatusApiV1GatewaysStatusGet<
   TData = Awaited<ReturnType<typeof gatewaysStatusApiV1GatewaysStatusGet>>,
   TError = HTTPValidationError,
 >(
-  gatewayResolveQuery: GatewayResolveQuery,
+  params?: GatewaysStatusApiV1GatewaysStatusGetParams,
   options?: {
     query?: Partial<
       UseQueryOptions<
@@ -223,7 +232,7 @@ export function useGatewaysStatusApiV1GatewaysStatusGet<
   TData = Awaited<ReturnType<typeof gatewaysStatusApiV1GatewaysStatusGet>>,
   TError = HTTPValidationError,
 >(
-  gatewayResolveQuery: GatewayResolveQuery,
+  params?: GatewaysStatusApiV1GatewaysStatusGetParams,
   options?: {
     query?: Partial<
       UseQueryOptions<
@@ -239,7 +248,7 @@ export function useGatewaysStatusApiV1GatewaysStatusGet<
   queryKey: DataTag<QueryKey, TData, TError>;
 } {
   const queryOptions = getGatewaysStatusApiV1GatewaysStatusGetQueryOptions(
-    gatewayResolveQuery,
+    params,
     options,
   );
 
