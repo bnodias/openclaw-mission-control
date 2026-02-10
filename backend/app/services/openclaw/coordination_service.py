@@ -34,11 +34,10 @@ from app.services.openclaw.exceptions import (
     map_gateway_error_message,
     map_gateway_error_to_http_exception,
 )
+from app.services.openclaw.internal import agent_key, with_coordination_gateway_retry
 from app.services.openclaw.provisioning import (
     LeadAgentOptions,
     LeadAgentRequest,
-    _agent_key,
-    _with_coordination_gateway_retry,
     ensure_board_lead_agent,
 )
 from app.services.openclaw.shared import (
@@ -80,7 +79,7 @@ class AbstractGatewayMessagingService(ABC):
 
     @staticmethod
     async def _with_gateway_retry(fn: Callable[[], Awaitable[_T]]) -> _T:
-        return await _with_coordination_gateway_retry(fn)
+        return await with_coordination_gateway_retry(fn)
 
     async def _dispatch_gateway_message(
         self,
@@ -297,7 +296,7 @@ class GatewayCoordinationService(AbstractGatewayMessagingService):
             async def _do_get() -> object:
                 return await openclaw_call(
                     "agents.files.get",
-                    {"agentId": _agent_key(target), "name": "SOUL.md"},
+                    {"agentId": agent_key(target), "name": "SOUL.md"},
                     config=config,
                 )
 
@@ -378,7 +377,7 @@ class GatewayCoordinationService(AbstractGatewayMessagingService):
                 return await openclaw_call(
                     "agents.files.set",
                     {
-                        "agentId": _agent_key(target),
+                        "agentId": agent_key(target),
                         "name": "SOUL.md",
                         "content": normalized_content,
                     },
