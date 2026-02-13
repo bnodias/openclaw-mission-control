@@ -114,6 +114,11 @@ import {
   parseApiDatetime,
   toLocalDateInput,
 } from "@/lib/datetime";
+import {
+  DEFAULT_HUMAN_LABEL,
+  resolveHumanActorName,
+  resolveMemberDisplayName,
+} from "@/lib/display-name";
 import { cn } from "@/lib/utils";
 import { usePageActive } from "@/hooks/usePageActive";
 import {
@@ -240,7 +245,7 @@ const toLiveFeedFromComment = (comment: TaskCommentRead): LiveFeedItem => ({
 
 const toLiveFeedFromBoardChat = (memory: BoardChatMessage): LiveFeedItem => {
   const content = (memory.content ?? "").trim();
-  const actorName = (memory.source ?? "User").trim() || "User";
+  const actorName = resolveHumanActorName(memory.source, DEFAULT_HUMAN_LABEL);
   const isCommand = content.startsWith("/");
   return {
     id: `chat:${memory.id}`,
@@ -591,15 +596,16 @@ TaskCommentCard.displayName = "TaskCommentCard";
 
 const ChatMessageCard = memo(function ChatMessageCard({
   message,
+  fallbackSource,
 }: {
   message: BoardChatMessage;
+  fallbackSource: string;
 }) {
+  const sourceLabel = resolveHumanActorName(message.source, fallbackSource);
   return (
     <div className="rounded-2xl border border-slate-200 bg-slate-50/60 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm font-semibold text-slate-900">
-          {message.source ?? "User"}
-        </p>
+        <p className="text-sm font-semibold text-slate-900">{sourceLabel}</p>
         <span className="text-xs text-slate-400">
           {formatShortTimestamp(message.created_at)}
         </span>
@@ -775,6 +781,11 @@ export default function BoardDetailPage() {
     const member =
       membershipQuery.data?.status === 200 ? membershipQuery.data.data : null;
     return member ? ["owner", "admin"].includes(member.role) : false;
+  }, [membershipQuery.data]);
+  const currentUserDisplayName = useMemo(() => {
+    const member =
+      membershipQuery.data?.status === 200 ? membershipQuery.data.data : null;
+    return resolveMemberDisplayName(member, DEFAULT_HUMAN_LABEL);
   }, [membershipQuery.data]);
   const canWrite = boardAccess.canWrite;
 
@@ -2002,6 +2013,7 @@ export default function BoardDetailPage() {
           {
             content: trimmed,
             tags: ["chat"],
+            source: currentUserDisplayName,
           },
         );
         if (result.status !== 200) {
@@ -2028,7 +2040,7 @@ export default function BoardDetailPage() {
         return { ok: false, error: message };
       }
     },
-    [boardId, isSignedIn, pushLiveFeed],
+    [boardId, currentUserDisplayName, isSignedIn, pushLiveFeed],
   );
 
   const handleSendChat = useCallback(
@@ -3869,7 +3881,7 @@ export default function BoardDetailPage() {
                       authorLabel={
                         comment.agent_id
                           ? (assigneeById.get(comment.agent_id) ?? "Agent")
-                          : "Admin"
+                          : currentUserDisplayName
                       }
                     />
                   ))}
@@ -3918,7 +3930,11 @@ export default function BoardDetailPage() {
                 </p>
               ) : (
                 chatMessages.map((message) => (
-                  <ChatMessageCard key={message.id} message={message} />
+                  <ChatMessageCard
+                    key={message.id}
+                    message={message}
+                    fallbackSource={currentUserDisplayName}
+                  />
                 ))
               )}
               <div ref={chatEndRef} />
@@ -3983,8 +3999,11 @@ export default function BoardDetailPage() {
                       null)
                     : null;
                   const authorName =
-                    item.actor_name?.trim() ||
-                    (authorAgent ? authorAgent.name : "Admin");
+                    authorAgent?.name ??
+                    resolveHumanActorName(
+                      item.actor_name,
+                      currentUserDisplayName,
+                    );
                   const authorRole = authorAgent
                     ? agentRoleLabel(authorAgent)
                     : null;
