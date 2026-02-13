@@ -100,6 +100,8 @@ async def test_lead_update_rejects_assignment_change_when_task_blocked() -> None
                 comment=None,
                 depends_on_task_ids=None,
                 tag_ids=None,
+                custom_field_values={},
+                custom_field_values_set=False,
             )
 
             with pytest.raises(HTTPException) as exc:
@@ -179,6 +181,8 @@ async def test_lead_update_rejects_status_change_when_task_blocked() -> None:
                 comment=None,
                 depends_on_task_ids=None,
                 tag_ids=None,
+                custom_field_values={},
+                custom_field_values_set=False,
             )
 
             with pytest.raises(HTTPException) as exc:
