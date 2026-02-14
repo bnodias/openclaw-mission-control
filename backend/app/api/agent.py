@@ -742,6 +742,52 @@ async def update_task(
     )
 
 
+@router.delete(
+    "/boards/{board_id}/tasks/{task_id}",
+    response_model=OkResponse,
+    tags=AGENT_BOARD_TAGS,
+    summary="Delete a task as board lead",
+    description=(
+        "Delete a board task and related records.\n\n"
+        "This action is restricted to board lead agents."
+    ),
+    openapi_extra=_agent_board_openapi_hints(
+        intent="agent_task_delete",
+        when_to_use=[
+            "Board lead needs to permanently remove an obsolete, duplicate, or invalid task.",
+        ],
+        when_not_to_use=[
+            "Use task updates when status changes or reassignment is sufficient.",
+        ],
+        required_actor="board_lead",
+        side_effects=[
+            "Deletes task comments, dependencies, tags, custom field values, and linked records.",
+        ],
+        routing_examples=[
+            {
+                "input": {
+                    "intent": "lead removes a duplicate task",
+                    "required_privilege": "board_lead",
+                },
+                "decision": "agent_task_delete",
+            }
+        ],
+    ),
+)
+async def delete_task(
+    task: Task = TASK_DEP,
+    session: AsyncSession = SESSION_DEP,
+    agent_ctx: AgentAuthContext = AGENT_CTX_DEP,
+) -> OkResponse:
+    """Delete a task after board-lead authorization checks."""
+    _guard_task_access(agent_ctx, task)
+    _require_board_lead(agent_ctx)
+    if task.board_id is None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
+    await tasks_api.delete_task_and_related_records(session, task=task)
+    return OkResponse()
+
+
 @router.get(
     "/boards/{board_id}/tasks/{task_id}/comments",
     response_model=DefaultLimitOffsetPage[TaskCommentRead],

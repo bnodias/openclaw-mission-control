@@ -1426,21 +1426,12 @@ async def update_task(
     )
 
 
-@router.delete("/{task_id}", response_model=OkResponse)
-async def delete_task(
-    session: AsyncSession = SESSION_DEP,
-    task: Task = TASK_DEP,
-    auth: AuthContext = ADMIN_AUTH_DEP,
-) -> OkResponse:
-    """Delete a task and related records."""
-    if task.board_id is None:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
-    board = await Board.objects.by_id(task.board_id).first(session)
-    if board is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    if auth.user is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
-    await require_board_access(session, user=auth.user, board=board, write=True)
+async def delete_task_and_related_records(
+    session: AsyncSession,
+    *,
+    task: Task,
+) -> None:
+    """Delete a task and associated relational records, then commit."""
     await crud.delete_where(
         session,
         ActivityEvent,
@@ -1496,6 +1487,24 @@ async def delete_task(
     )
     await session.delete(task)
     await session.commit()
+
+
+@router.delete("/{task_id}", response_model=OkResponse)
+async def delete_task(
+    session: AsyncSession = SESSION_DEP,
+    task: Task = TASK_DEP,
+    auth: AuthContext = ADMIN_AUTH_DEP,
+) -> OkResponse:
+    """Delete a task and related records."""
+    if task.board_id is None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
+    board = await Board.objects.by_id(task.board_id).first(session)
+    if board is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if auth.user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+    await require_board_access(session, user=auth.user, board=board, write=True)
+    await delete_task_and_related_records(session, task=task)
     return OkResponse()
 
 
