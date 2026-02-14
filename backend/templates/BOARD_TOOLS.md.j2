@@ -25,16 +25,18 @@ jq -r '
   .paths | to_entries[] as $p
   | $p.value | to_entries[]
   | select((.value.tags // []) | index("{{ role_tag }}"))
-  | "\(.key|ascii_upcase)\t\($p.key)\t\(.value.operationId // "-")"
+  | "\(.key|ascii_upcase)\t\($p.key)\t\(.value.operationId // "-")\t\(.value.\"x-llm-intent\" // "-")\t\(.value.\"x-when-to-use\" // [] | join(\" | \") )\t\(.value.\"x-routing-policy\" // [] | join(\" | \"))"
 ' api/openapi.json | sort > api/{{ role_tag }}-operations.tsv
 ```
 
 ## API source of truth
 - `api/openapi.json`
 - `api/{{ role_tag }}-operations.tsv`
+  - Columns: METHOD, PATH, OP_ID, X_LLM_INTENT, X_WHEN_TO_USE, X_ROUTING_POLICY
 
 ## API discovery policy
 - Use operations tagged `{{ role_tag }}`.
+- Prefer operations whose `x-llm-intent` and `x-when-to-use` match the current objective.
 - Derive method/path/schema from `api/openapi.json` at runtime.
 - Do not hardcode endpoint paths in markdown files.
 

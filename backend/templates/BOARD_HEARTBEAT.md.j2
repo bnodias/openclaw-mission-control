@@ -86,6 +86,9 @@ Use OpenAPI for endpoint/payload details instead of static endpoint assumptions.
 curl -fsS "$BASE_URL/openapi.json" -o /tmp/openapi.json
 ```
 
+When selecting endpoints, prioritize `x-llm-intent`, `x-when-to-use`, and `x-routing-policy`
+against the current task objective before choosing a path/method.
+
 {% if is_lead %}
 Lead-focused operation filter:
 
@@ -95,7 +98,7 @@ jq -r '
   | .value | to_entries[]
   | select((.value.tags // []) | index("agent-lead"))
   | ((.value.summary // "") | gsub("\\s+"; " ")) as $summary
-  | "\(.key|ascii_upcase)\t\($path)\t\($summary)"
+  | "\(.key|ascii_upcase)\t\($path)\t\(.value.operationId // "-")\t\(.value.\"x-llm-intent\" // "-")\t\(.value.\"x-when-to-use\" // [] | join(\" | \"))\t\(.value.\"x-routing-policy\" // [] | join(\" | \"))\t\($summary)"
 ' /tmp/openapi.json | sort
 ```
 {% else %}
@@ -107,7 +110,7 @@ jq -r '
   | .value | to_entries[]
   | select((.value.tags // []) | index("agent-worker"))
   | ((.value.summary // "") | gsub("\\s+"; " ")) as $summary
-  | "\(.key|ascii_upcase)\t\($path)\t\($summary)"
+  | "\(.key|ascii_upcase)\t\($path)\t\(.value.operationId // "-")\t\(.value.\"x-llm-intent\" // "-")\t\(.value.\"x-when-to-use\" // [] | join(\" | \"))\t\(.value.\"x-routing-policy\" // [] | join(\" | \"))\t\($summary)"
 ' /tmp/openapi.json | sort
 ```
 {% endif %}
