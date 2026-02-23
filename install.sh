@@ -646,7 +646,7 @@ main() {
     if [[ -n "$FORCE_FRONTEND_PORT" ]]; then
       frontend_port="$FORCE_FRONTEND_PORT"
     else
-      frontend_port="$(prompt_with_default "Frontend port" "3000")"
+      frontend_port="$(prompt_with_default "Frontend port" "3001")"
     fi
     is_valid_port "$frontend_port" && break
     warn "Invalid frontend port: $frontend_port"
@@ -770,9 +770,9 @@ SUMMARY
     upsert_env_value "$REPO_ROOT/.env" "POSTGRES_DB" "mission_control"
     upsert_env_value "$REPO_ROOT/.env" "POSTGRES_USER" "postgres"
     upsert_env_value "$REPO_ROOT/.env" "POSTGRES_PASSWORD" "postgres"
-    upsert_env_value "$REPO_ROOT/.env" "POSTGRES_PORT" "5432"
+    upsert_env_value "$REPO_ROOT/.env" "POSTGRES_PORT" "5433"
 
-    database_url="postgresql+psycopg://postgres:postgres@localhost:5432/mission_control"
+    database_url="postgresql+psycopg://postgres:postgres@localhost:5433/mission_control"
 
     info "Starting PostgreSQL via Docker..."
     docker_compose -f compose.yml --env-file .env up -d db
